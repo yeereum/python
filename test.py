@@ -111,7 +111,7 @@ class Tile:
 class GameState:
     day: int = 1
     season: int = 0
-    gold: int = 500
+    gold: int = 500000
     energy: int = 100
     max_energy: int = 100
     level: int = 1
