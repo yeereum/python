@@ -58,5 +58,3 @@ class GOATGAME(arcade.View):
 
 window.show_view(GOATGAME())
 arcade.run()
-
-# 이것은 테스트 문장이므로 어쩌구저쩌구 주호준 멍청이 킥킥킥
