@@ -9,6 +9,7 @@ class GOATGAME(arcade.View):
         self.circle_x = 400
         self.circle_y = 300
         self.circle_radius = 50
+        self.circle_speed = 250
         self.keypress = {'W': False, 'S': False, 'A': False, 'D': False}
         
     def on_show_view(self):
@@ -48,13 +49,13 @@ class GOATGAME(arcade.View):
 
     def on_update(self, delta_time: float):
         if self.keypress['W']:
-            self.circle_y += 5
+            self.circle_y += self.circle_speed * delta_time
         if self.keypress['S']:
-            self.circle_y -= 5
+            self.circle_y -= self.circle_speed * delta_time
         if self.keypress['A']:
-            self.circle_x -= 5
+            self.circle_x -= self.circle_speed * delta_time
         if self.keypress['D']:
-            self.circle_x += 5
+            self.circle_x += self.circle_speed * delta_time
 
 window.show_view(GOATGAME())
 arcade.run()
