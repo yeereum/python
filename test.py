@@ -1,30 +1,29 @@
 """
-단어 배열 퍼즐 자동 클릭기 (연속 감시 버전)
-===========================================
+단어 배열 퍼즐 자동 클릭기 (오류 검증 + 자동 복구 버전)
+========================================================
 
-동작 흐름
----------
-1. REFERENCE_REGION(정답 문장이 표시되는 영역)을 OCR로 읽어 "정답 문장"을 얻는다.
-2. WORD_REGION(뒤섞인 단어 버튼들이 있는 영역)을 OCR로 읽어 단어+좌표를 얻는다.
-3. 정답 문장의 단어 순서에 맞춰, 인식된 버튼들을 0.5초 간격으로 순서대로 클릭한다.
-4. 클릭 도중/이후 WORD_REGION에 단어가 안 보이면:
-   - 몇 초간(WAIT_TIMEOUT) 짧은 간격으로 재확인한다.
-   - 그 사이 새 단어(다음 문제)가 나타나면 그 문제로 자동 이어서 진행한다.
-   - 시간 내에 아무것도 안 나타나면 프로그램을 정지한다.
-5. 사용자가 임의로 "다음 문장"으로 넘기는 것도 3~4번 로직으로 자동 감지된다.
-   (REFERENCE_REGION의 텍스트가 바뀌면 새 문제로 인식) — 별도로 스크립트를
-   다시 실행할 필요가 없다.
+v2 대비 추가된 부분
+--------------------
+- 매 클릭 후 ANSWER_REGION(조립되고 있는 문장이 표시되는 영역)을 OCR로 확인해서
+  방금 클릭한 단어가 "정답 순서대로 정확히" 들어갔는지 검증한다.
+- 틀렸다면(엉뚱한 단어가 들어갔거나, 순서가 어긋났거나, 오타 인식 등):
+    1) 조립 영역에서 틀리기 시작한 지점까지 단어를 하나씩 되돌린다(undo).
+    2) 그 지점(= 마지막으로 확인된 정답 위치)부터 다시 시도한다.
+    3) 같은 지점에서 반복 실패하면(MAX_RETRIES_PER_WORD 초과) 프로그램을 정지한다.
+- 매 단어를 클릭하기 전, 버튼 풀(WORD_REGION)을 다시 스캔해서 좌표를 새로
+  찾는다. 버튼 위치가 매 클릭마다 재배치되는 앱에도 대응하기 위함이다.
+
+전제 조건 (중요)
+-----------------
+"되돌리기"는 [조립된 문장에서 단어를 다시 탭하면 풀로 돌아간다]는 동작을
+가정하고 구현했습니다. 여러분의 앱이 이렇게 동작하지 않는다면(예: 전체를
+한번에 지우는 "지우기" 버튼만 있는 경우) 아래 `undo_last_answer_word()`를
+`reset_answer_full()`로 교체하세요. 주석으로 예시를 남겨뒀습니다.
 
 사전 준비
 ---------
 pip install pytesseract pyautogui mss pillow
-+ Tesseract OCR 엔진 설치 (Windows: UB-Mannheim 빌드, Mac: brew install tesseract)
-
-가장 먼저 할 일
----------------
-REFERENCE_REGION과 WORD_REGION 좌표를 실제 앱 화면에 맞게 수정하세요.
-좌표를 모르면 스크립트 맨 아래 `print_mouse_position()` 함수로 마우스를
-움직여가며 좌표를 확인할 수 있습니다.
++ Tesseract OCR 엔진 설치 (kor+eng 언어팩 포함)
 """
 
 import time
@@ -34,36 +33,35 @@ from PIL import Image
 import mss
 
 # ── 설정 ──────────────────────────────────────────────────────────
-# 정답 문장이 표시되는 화면 영역 (예: 상단에 "이 문장을 만드세요: ..." 처럼 뜨는 부분)
-REFERENCE_REGION = {"left": 100, "top": 100, "width": 800, "height": 100}
+REFERENCE_REGION = {"left": 100, "top": 100, "width": 800, "height": 100}  # 정답 문장 표시 영역
+WORD_REGION      = {"left": 100, "top": 300, "width": 800, "height": 200}  # 뒤섞인 단어 버튼 영역
+ANSWER_REGION    = {"left": 100, "top": 220, "width": 800, "height": 80}   # 조립 중인 문장 표시 영역
 
-# 뒤섞인 단어 버튼들이 표시되는 화면 영역
-WORD_REGION = {"left": 100, "top": 300, "width": 800, "height": 300}
+CLICK_DELAY   = 0.5   # 정상 클릭 사이 간격(초)
+VERIFY_DELAY  = 0.25  # 클릭 후 화면 갱신을 기다렸다가 검증하기까지 대기(초)
+UNDO_DELAY    = 0.3   # 되돌리기 클릭 사이 간격(초)
+POLL_INTERVAL = 0.5   # 버튼/문제가 안 보일 때 재확인 간격(초)
+WAIT_TIMEOUT  = 6.0   # 새 문제가 이만큼(초) 안 나타나면 정지
+MAX_RETRIES_PER_WORD = 3  # 같은 단어 위치에서 이 횟수 넘게 실패하면 정지
 
-CLICK_DELAY = 0.5          # 단어 클릭 사이 간격(초) — 요청하신 0.5초
-POLL_INTERVAL = 0.5        # 단어가 안 보일 때 재확인 간격(초)
-WAIT_TIMEOUT = 6.0         # 이 시간 동안 단어가 안 나타나면 정지(초)
 OCR_LANG = "kor+eng"
-MIN_CONF = 40              # OCR 신뢰도 임계값
+MIN_CONF = 40
 
 
 # ── 화면 캡처 + OCR 공통 함수 ─────────────────────────────────────
 def capture_region(region):
     with mss.mss() as sct:
         shot = sct.grab(region)
-        img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-    return img
+        return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
 
 
 def ocr_plain_text(region):
-    """REFERENCE_REGION처럼 '문장 하나'를 통으로 읽을 때 사용."""
     img = capture_region(region)
-    text = pytesseract.image_to_string(img, lang=OCR_LANG).strip()
-    return text
+    return pytesseract.image_to_string(img, lang=OCR_LANG).strip()
 
 
 def ocr_words_with_coords(region):
-    """WORD_REGION처럼 '흩어진 단어 버튼들'의 텍스트+좌표를 읽을 때 사용."""
+    """텍스트+좌표+화면상 읽는 순서를 함께 반환 (버튼 풀, 조립 영역 공용)."""
     img = capture_region(region)
     data = pytesseract.image_to_data(
         img, lang=OCR_LANG, output_type=pytesseract.Output.DICT
@@ -77,72 +75,137 @@ def ocr_words_with_coords(region):
         x = data["left"][i] + data["width"][i] // 2 + region["left"]
         y = data["top"][i] + data["height"][i] // 2 + region["top"]
         words.append({"text": text, "x": x, "y": y})
-    return words
+    return words  # Tesseract 기본 순서 = 대략 좌->우, 위->아래 (읽는 순서)
 
 
-# ── 정답 문장 순서에 맞춰 버튼 매칭 ────────────────────────────────
-def match_words_to_reference(reference_sentence, detected_words):
+# ── 버튼 풀에서 특정 단어 찾기 ─────────────────────────────────────
+def find_word_button(target_text, exclude_coords=None):
     """
-    reference_sentence의 단어 순서대로 detected_words에서 좌표를 찾아 반환.
-    detected_words에 정답 단어가 전부 없으면 None (아직 버튼이 다 안 떴다고 판단).
+    WORD_REGION에서 target_text와 일치하는 버튼 좌표를 찾는다.
+    같은 텍스트가 여러 개 있을 수 있으므로, 이미 실패했던 좌표(exclude_coords)는
+    제외하고 다른 인스턴스를 시도할 수 있게 한다.
     """
-    tokens = reference_sentence.split()
-    if not tokens:
-        return None
-
-    remaining = list(detected_words)
-    ordered = []
-    for token in tokens:
-        match = next((w for w in remaining if w["text"] == token), None)
-        if match is None:
-            return None  # 정답 단어 중 하나라도 화면에서 못 찾으면 아직 준비 안 된 것
-        ordered.append(match)
-        remaining.remove(match)
-    return ordered
+    candidates = [w for w in ocr_words_with_coords(WORD_REGION) if w["text"] == target_text]
+    if exclude_coords:
+        candidates = [w for w in candidates if (w["x"], w["y"]) not in exclude_coords]
+    return candidates[0] if candidates else None
 
 
-# ── 한 문제를 클릭으로 완료 ────────────────────────────────────────
-def click_sentence(ordered_words):
-    for w in ordered_words:
-        pyautogui.click(w["x"], w["y"])
-        print(f"  클릭: '{w['text']}' @ ({w['x']}, {w['y']})")
-        time.sleep(CLICK_DELAY)
+# ── 조립 영역 상태 읽기 ────────────────────────────────────────────
+def get_answer_words():
+    return ocr_words_with_coords(ANSWER_REGION)
 
 
-# ── 메인 감시 루프 (상태기계) ──────────────────────────────────────
+# ── 되돌리기 ──────────────────────────────────────────────────────
+def undo_last_answer_word():
+    """
+    조립 영역의 마지막 단어를 클릭해서 풀로 되돌린다.
+    (전제: 조립된 단어를 탭하면 되돌아가는 UI)
+    """
+    current = get_answer_words()
+    if not current:
+        return
+    last = current[-1]
+    pyautogui.click(last["x"], last["y"])
+    print(f"  되돌리기: '{last['text']}' 제거")
+    time.sleep(UNDO_DELAY)
+
+
+# 대안: 전체 지우기 버튼이 따로 있는 앱이라면 이걸 대신 쓰세요.
+# RESET_BUTTON_COORD = (500, 250)  # "지우기" 버튼 좌표로 수정
+# def reset_answer_full():
+#     pyautogui.click(*RESET_BUTTON_COORD)
+#     time.sleep(UNDO_DELAY)
+
+
+def undo_to_length(target_length):
+    """조립 영역의 단어 개수가 target_length가 될 때까지 마지막 단어를 계속 제거."""
+    while True:
+        current = get_answer_words()
+        if len(current) <= target_length:
+            break
+        undo_last_answer_word()
+
+
+# ── 한 문장을 검증하며 클릭 (핵심 로직) ────────────────────────────
+def solve_sentence(reference_tokens):
+    """
+    reference_tokens 순서대로 버튼을 클릭하되, 매 클릭 후 조립 영역을 검증한다.
+    틀리면 해당 지점까지 되돌리고 같은 지점부터 재시도한다.
+    반환값: True(완료) / False(복구 실패로 중단)
+    """
+    index = 0
+    retries_at_index = 0
+    failed_coords_at_index = []  # 같은 지점에서 잘못 클릭했던 좌표 기록 (동일 텍스트 중복 버튼 대비)
+    button_wait_elapsed = 0.0
+
+    while index < len(reference_tokens):
+        target = reference_tokens[index]
+        btn = find_word_button(target, exclude_coords=failed_coords_at_index)
+
+        if btn is None:
+            # 아직 해당 단어 버튼이 화면에 안 떴을 수 있음 -> 짧게 대기 후 재시도
+            button_wait_elapsed += POLL_INTERVAL
+            if button_wait_elapsed >= WAIT_TIMEOUT:
+                print(f"'{target}' 버튼을 끝내 찾지 못했습니다. 중단합니다.")
+                return False
+            time.sleep(POLL_INTERVAL)
+            continue
+        button_wait_elapsed = 0.0
+
+        pyautogui.click(btn["x"], btn["y"])
+        time.sleep(VERIFY_DELAY)
+
+        answer_words = get_answer_words()
+        answer_texts = [w["text"] for w in answer_words]
+        expected_prefix = reference_tokens[: index + 1]
+
+        if answer_texts == expected_prefix:
+            print(f"[{index + 1}/{len(reference_tokens)}] '{target}' 정상 배치 확인")
+            index += 1
+            retries_at_index = 0
+            failed_coords_at_index = []
+            time.sleep(max(0.0, CLICK_DELAY - VERIFY_DELAY))
+        else:
+            print(f"오류 감지! 기대: {expected_prefix} / 실제: {answer_texts}")
+            retries_at_index += 1
+            failed_coords_at_index.append((btn["x"], btn["y"]))
+
+            if retries_at_index > MAX_RETRIES_PER_WORD:
+                print(f"'{target}' 위치에서 {MAX_RETRIES_PER_WORD}회 넘게 실패 — 프로그램을 정지합니다.")
+                return False
+
+            print(f"  복구 중: {index}개까지만 남기고 되돌립니다...")
+            undo_to_length(index)  # 마지막으로 확인됐던 정답 지점까지 되돌림
+            # index는 그대로 유지 -> 같은 단어부터 재시도 (while 루프 처음으로)
+
+    print("문장 조립 완료.")
+    return True
+
+
+# ── 메인 감시 루프 ─────────────────────────────────────────────────
 def run():
     print("감시를 시작합니다. Ctrl+C로 언제든 중단할 수 있습니다.")
     last_reference = None
-    no_word_elapsed = 0.0
+    no_ref_elapsed = 0.0
 
     while True:
         reference_sentence = ocr_plain_text(REFERENCE_REGION)
-        detected_words = ocr_words_with_coords(WORD_REGION)
 
-        is_new_reference = bool(reference_sentence) and reference_sentence != last_reference
-        ordered = None
-        if reference_sentence:
-            ordered = match_words_to_reference(reference_sentence, detected_words)
-
-        if ordered is not None and is_new_reference:
-            # 새 문제 등장 + 버튼도 다 준비됨 -> 클릭 시작
+        if reference_sentence and reference_sentence != last_reference:
             print(f"\n새 문제 인식: '{reference_sentence}'")
-            click_sentence(ordered)
+            tokens = reference_sentence.split()
+            success = solve_sentence(tokens)
+            if not success:
+                break
             last_reference = reference_sentence
-            no_word_elapsed = 0.0
-            print("이 문제 완료. 다음 문제를 기다립니다...")
-
-        elif ordered is None and (not detected_words):
-            # 화면에 단어가 하나도 안 보임 -> 대기하며 재확인
-            no_word_elapsed += POLL_INTERVAL
-            print(f"단어 버튼이 안 보입니다. 대기 중... ({no_word_elapsed:.1f}s / {WAIT_TIMEOUT}s)")
-            if no_word_elapsed >= WAIT_TIMEOUT:
+            no_ref_elapsed = 0.0
+            print("다음 문제를 기다립니다...")
+        else:
+            no_ref_elapsed += POLL_INTERVAL
+            if no_ref_elapsed >= WAIT_TIMEOUT and not reference_sentence:
                 print("시간 초과: 더 이상 새 문제가 나타나지 않아 프로그램을 정지합니다.")
                 break
-            time.sleep(POLL_INTERVAL)
-
-        else:
-            # 단어는 보이지만 아직 정답 문장과 매칭이 안 됨(버튼이 로딩 중) -> 짧게 재시도
             time.sleep(POLL_INTERVAL)
 
     print("종료되었습니다.")
@@ -150,12 +213,7 @@ def run():
 
 # ── 좌표 확인용 보조 도구 ──────────────────────────────────────────
 def print_mouse_position(duration=15):
-    """
-    REFERENCE_REGION / WORD_REGION 좌표를 잡을 때 사용하세요.
-    실행 후 duration초 동안 마우스를 원하는 지점으로 움직이면
-    현재 좌표가 콘솔에 계속 출력됩니다.
-    """
-    print(f"{duration}초 동안 마우스 좌표를 출력합니다. 원하는 지점 위로 움직여보세요.")
+    print(f"{duration}초 동안 마우스 좌표를 출력합니다.")
     end = time.time() + duration
     try:
         while time.time() < end:
@@ -168,7 +226,8 @@ def print_mouse_position(duration=15):
 
 
 if __name__ == "__main__":
-    # 좌표를 아직 모른다면 아래 줄의 주석을 풀고 먼저 실행해서 좌표를 확인하세요.
+    # 좌표(REFERENCE_REGION / WORD_REGION / ANSWER_REGION)를 모르면
+    # 아래 줄 주석을 풀고 먼저 실행해서 확인하세요.
     # print_mouse_position()
 
     run()
