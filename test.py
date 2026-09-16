@@ -1,185 +1,174 @@
 """
-단어 배열 퍼즐 자동 풀이 스크립트
-==================================
+단어 배열 퍼즐 자동 클릭기 (연속 감시 버전)
+===========================================
 
-동작 원리
+동작 흐름
 ---------
-1. 화면(또는 지정한 영역)을 캡처한다.
-2. OCR(Tesseract)로 화면에 흩어진 단어들의 텍스트와 좌표(bounding box)를 추출한다.
-3. 추출된 단어들을 올바른 문장 순서로 정렬한다.
-   - 기본: Claude API를 호출해 올바른 어순을 물어봄 (가장 정확)
-   - 대안: 규칙 기반(대문자로 시작하는 단어를 문장 시작으로, 마침표 있는 단어를 끝으로 등)
-4. 정렬된 순서대로 각 단어의 화면 좌표를 자동으로 클릭한다 (pyautogui).
+1. REFERENCE_REGION(정답 문장이 표시되는 영역)을 OCR로 읽어 "정답 문장"을 얻는다.
+2. WORD_REGION(뒤섞인 단어 버튼들이 있는 영역)을 OCR로 읽어 단어+좌표를 얻는다.
+3. 정답 문장의 단어 순서에 맞춰, 인식된 버튼들을 0.5초 간격으로 순서대로 클릭한다.
+4. 클릭 도중/이후 WORD_REGION에 단어가 안 보이면:
+   - 몇 초간(WAIT_TIMEOUT) 짧은 간격으로 재확인한다.
+   - 그 사이 새 단어(다음 문제)가 나타나면 그 문제로 자동 이어서 진행한다.
+   - 시간 내에 아무것도 안 나타나면 프로그램을 정지한다.
+5. 사용자가 임의로 "다음 문장"으로 넘기는 것도 3~4번 로직으로 자동 감지된다.
+   (REFERENCE_REGION의 텍스트가 바뀌면 새 문제로 인식) — 별도로 스크립트를
+   다시 실행할 필요가 없다.
 
 사전 준비
 ---------
-1. Python 패키지 설치:
-   pip install pytesseract pyautogui mss pillow anthropic
+pip install pytesseract pyautogui mss pillow
++ Tesseract OCR 엔진 설치 (Windows: UB-Mannheim 빌드, Mac: brew install tesseract)
 
-2. Tesseract OCR 엔진 설치 (별도 프로그램, pytesseract는 이걸 감싸는 래퍼일 뿐입니다):
-   - Windows: https://github.com/UB-Mannheim/tesseract/wiki 에서 설치 후,
-     아래 TESSERACT_CMD 경로를 실제 설치 경로로 수정하세요.
-   - Mac: brew install tesseract
-
-3. (선택) Claude API를 쓰려면 환경변수 ANTHROPIC_API_KEY를 설정하세요.
-   설정하지 않으면 규칙 기반 정렬로 자동 대체됩니다.
-
-주의사항
---------
-- 이 스크립트는 여러분의 PC에서 로컬로 실행하는 용도입니다 (이 대화 환경이 아님).
-- SCREEN_REGION을 실제 퍼즐이 표시되는 화면 좌표에 맞게 수정해야 인식률이 올라갑니다.
-- 앱마다 폰트/배경이 달라 OCR 인식률이 다를 수 있습니다. 필요하면 이미지 전처리
-  (흑백 변환, 대비 조절 등)를 추가하세요.
+가장 먼저 할 일
+---------------
+REFERENCE_REGION과 WORD_REGION 좌표를 실제 앱 화면에 맞게 수정하세요.
+좌표를 모르면 스크립트 맨 아래 `print_mouse_position()` 함수로 마우스를
+움직여가며 좌표를 확인할 수 있습니다.
 """
 
 import time
-import re
-import os
-
 import pyautogui
 import pytesseract
 from PIL import Image
 import mss
 
 # ── 설정 ──────────────────────────────────────────────────────────
-# Windows에서 Tesseract 경로를 직접 지정해야 할 수도 있습니다. 예:
-# pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+# 정답 문장이 표시되는 화면 영역 (예: 상단에 "이 문장을 만드세요: ..." 처럼 뜨는 부분)
+REFERENCE_REGION = {"left": 100, "top": 100, "width": 800, "height": 100}
 
-# 캡처할 화면 영역 (단어들이 표시되는 부분만 지정하면 인식률과 속도가 좋아집니다)
-# left, top, width, height. None이면 전체 화면을 캡처합니다.
-SCREEN_REGION = None  # 예: {"left": 100, "top": 400, "width": 800, "height": 300}
+# 뒤섞인 단어 버튼들이 표시되는 화면 영역
+WORD_REGION = {"left": 100, "top": 300, "width": 800, "height": 300}
 
-# 클릭 사이 지연 시간(초). 너무 빠르면 앱이 클릭을 놓칠 수 있습니다.
-CLICK_DELAY = 0.4
+CLICK_DELAY = 0.5          # 단어 클릭 사이 간격(초) — 요청하신 0.5초
+POLL_INTERVAL = 0.5        # 단어가 안 보일 때 재확인 간격(초)
+WAIT_TIMEOUT = 6.0         # 이 시간 동안 단어가 안 나타나면 정지(초)
+OCR_LANG = "kor+eng"
+MIN_CONF = 40              # OCR 신뢰도 임계값
 
-# 실행 전 대기 시간(초). 이 사이에 퍼즐 화면을 준비하세요.
-START_DELAY = 3
 
-
-# ── 1. 화면 캡처 ──────────────────────────────────────────────────
-def capture_screen(region=None):
+# ── 화면 캡처 + OCR 공통 함수 ─────────────────────────────────────
+def capture_region(region):
     with mss.mss() as sct:
-        monitor = region if region else sct.monitors[1]
-        shot = sct.grab(monitor)
+        shot = sct.grab(region)
         img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-    return img, monitor
+    return img
 
 
-# ── 2. OCR로 단어 + 좌표 추출 ─────────────────────────────────────
-def extract_words(img, offset=(0, 0), lang="kor+eng"):
-    """
-    반환: [{"text": 단어, "x": 화면절대x, "y": 화면절대y}, ...]
-    x, y는 해당 단어 박스의 중심 좌표(클릭할 지점)입니다.
-    """
+def ocr_plain_text(region):
+    """REFERENCE_REGION처럼 '문장 하나'를 통으로 읽을 때 사용."""
+    img = capture_region(region)
+    text = pytesseract.image_to_string(img, lang=OCR_LANG).strip()
+    return text
+
+
+def ocr_words_with_coords(region):
+    """WORD_REGION처럼 '흩어진 단어 버튼들'의 텍스트+좌표를 읽을 때 사용."""
+    img = capture_region(region)
     data = pytesseract.image_to_data(
-        img, lang=lang, output_type=pytesseract.Output.DICT
+        img, lang=OCR_LANG, output_type=pytesseract.Output.DICT
     )
-
     words = []
-    n = len(data["text"])
-    for i in range(n):
+    for i in range(len(data["text"])):
         text = data["text"][i].strip()
         conf = int(data["conf"][i]) if data["conf"][i] != "-1" else -1
-        if not text or conf < 40:  # 신뢰도 낮은 조각 제외
+        if not text or conf < MIN_CONF:
             continue
-        x = data["left"][i] + data["width"][i] // 2 + offset[0]
-        y = data["top"][i] + data["height"][i] // 2 + offset[1]
+        x = data["left"][i] + data["width"][i] // 2 + region["left"]
+        y = data["top"][i] + data["height"][i] // 2 + region["top"]
         words.append({"text": text, "x": x, "y": y})
     return words
 
 
-# ── 3-A. Claude API로 올바른 어순 판단 (권장) ─────────────────────
-def order_words_with_claude(words):
+# ── 정답 문장 순서에 맞춰 버튼 매칭 ────────────────────────────────
+def match_words_to_reference(reference_sentence, detected_words):
     """
-    words: [{"text": ..., "x": ..., "y": ...}, ...]
-    반환: 올바른 순서로 재배열된 같은 리스트
+    reference_sentence의 단어 순서대로 detected_words에서 좌표를 찾아 반환.
+    detected_words에 정답 단어가 전부 없으면 None (아직 버튼이 다 안 떴다고 판단).
     """
-    try:
-        import anthropic
-    except ImportError:
+    tokens = reference_sentence.split()
+    if not tokens:
         return None
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return None
-
-    client = anthropic.Anthropic(api_key=api_key)
-    word_list = [w["text"] for w in words]
-
-    prompt = (
-        "다음은 뒤섞인 단어 목록입니다. 문법적으로 올바른 하나의 문장이 되도록 "
-        "순서를 정렬해서, 정렬된 단어만 쉼표로 구분해 한 줄로 출력하세요. "
-        "설명이나 다른 텍스트는 출력하지 마세요.\n\n"
-        f"단어 목록: {word_list}"
-    )
-
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=200,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    result_text = response.content[0].text.strip()
-    ordered_texts = [t.strip() for t in result_text.split(",")]
-
-    # 텍스트 -> 원본 단어 객체 매핑 (동일 단어가 여러 개일 경우를 대비해 하나씩 소비)
-    remaining = list(words)
+    remaining = list(detected_words)
     ordered = []
-    for token in ordered_texts:
-        for w in remaining:
-            if w["text"] == token:
-                ordered.append(w)
-                remaining.remove(w)
-                break
-    # 매칭 안 된 단어가 있으면 실패로 간주
-    if len(ordered) != len(words):
-        return None
+    for token in tokens:
+        match = next((w for w in remaining if w["text"] == token), None)
+        if match is None:
+            return None  # 정답 단어 중 하나라도 화면에서 못 찾으면 아직 준비 안 된 것
+        ordered.append(match)
+        remaining.remove(match)
     return ordered
 
 
-# ── 3-B. 규칙 기반 정렬 (API 키 없을 때 대체용, 정확도 낮음) ──────
-def order_words_by_heuristic(words):
-    def score(w):
-        t = w["text"]
-        starts_capital = t[0].isupper() if t and t[0].isalpha() else False
-        ends_punct = bool(re.search(r"[.!?]$", t))
-        return (not starts_capital, ends_punct)
-
-    return sorted(words, key=score)
-
-
-# ── 4. 순서대로 클릭 ──────────────────────────────────────────────
-def click_words_in_order(ordered_words, delay=CLICK_DELAY):
+# ── 한 문제를 클릭으로 완료 ────────────────────────────────────────
+def click_sentence(ordered_words):
     for w in ordered_words:
         pyautogui.click(w["x"], w["y"])
-        print(f"클릭: '{w['text']}' @ ({w['x']}, {w['y']})")
-        time.sleep(delay)
+        print(f"  클릭: '{w['text']}' @ ({w['x']}, {w['y']})")
+        time.sleep(CLICK_DELAY)
 
 
-# ── 메인 ──────────────────────────────────────────────────────────
-def main():
-    print(f"{START_DELAY}초 후 캡처를 시작합니다. 퍼즐 화면을 준비하세요...")
-    time.sleep(START_DELAY)
+# ── 메인 감시 루프 (상태기계) ──────────────────────────────────────
+def run():
+    print("감시를 시작합니다. Ctrl+C로 언제든 중단할 수 있습니다.")
+    last_reference = None
+    no_word_elapsed = 0.0
 
-    img, monitor = capture_screen(SCREEN_REGION)
-    offset = (monitor["left"], monitor["top"]) if SCREEN_REGION else (0, 0)
+    while True:
+        reference_sentence = ocr_plain_text(REFERENCE_REGION)
+        detected_words = ocr_words_with_coords(WORD_REGION)
 
-    words = extract_words(img, offset=offset)
-    if not words:
-        print("단어를 인식하지 못했습니다. SCREEN_REGION과 언어 설정을 확인하세요.")
-        return
+        is_new_reference = bool(reference_sentence) and reference_sentence != last_reference
+        ordered = None
+        if reference_sentence:
+            ordered = match_words_to_reference(reference_sentence, detected_words)
 
-    print("인식된 단어:", [w["text"] for w in words])
+        if ordered is not None and is_new_reference:
+            # 새 문제 등장 + 버튼도 다 준비됨 -> 클릭 시작
+            print(f"\n새 문제 인식: '{reference_sentence}'")
+            click_sentence(ordered)
+            last_reference = reference_sentence
+            no_word_elapsed = 0.0
+            print("이 문제 완료. 다음 문제를 기다립니다...")
 
-    ordered = order_words_with_claude(words)
-    if ordered is None:
-        print("Claude API 미사용/실패 — 규칙 기반 정렬로 대체합니다.")
-        ordered = order_words_by_heuristic(words)
+        elif ordered is None and (not detected_words):
+            # 화면에 단어가 하나도 안 보임 -> 대기하며 재확인
+            no_word_elapsed += POLL_INTERVAL
+            print(f"단어 버튼이 안 보입니다. 대기 중... ({no_word_elapsed:.1f}s / {WAIT_TIMEOUT}s)")
+            if no_word_elapsed >= WAIT_TIMEOUT:
+                print("시간 초과: 더 이상 새 문제가 나타나지 않아 프로그램을 정지합니다.")
+                break
+            time.sleep(POLL_INTERVAL)
 
-    print("정렬된 순서:", [w["text"] for w in ordered])
+        else:
+            # 단어는 보이지만 아직 정답 문장과 매칭이 안 됨(버튼이 로딩 중) -> 짧게 재시도
+            time.sleep(POLL_INTERVAL)
 
-    click_words_in_order(ordered)
-    print("완료.")
+    print("종료되었습니다.")
+
+
+# ── 좌표 확인용 보조 도구 ──────────────────────────────────────────
+def print_mouse_position(duration=15):
+    """
+    REFERENCE_REGION / WORD_REGION 좌표를 잡을 때 사용하세요.
+    실행 후 duration초 동안 마우스를 원하는 지점으로 움직이면
+    현재 좌표가 콘솔에 계속 출력됩니다.
+    """
+    print(f"{duration}초 동안 마우스 좌표를 출력합니다. 원하는 지점 위로 움직여보세요.")
+    end = time.time() + duration
+    try:
+        while time.time() < end:
+            x, y = pyautogui.position()
+            print(f"\r현재 좌표: ({x}, {y})   ", end="")
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        pass
+    print()
 
 
 if __name__ == "__main__":
-    main()
+    # 좌표를 아직 모른다면 아래 줄의 주석을 풀고 먼저 실행해서 좌표를 확인하세요.
+    # print_mouse_position()
+
+    run()
