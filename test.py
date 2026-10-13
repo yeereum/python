@@ -1,233 +1,332 @@
-"""
-단어 배열 퍼즐 자동 클릭기 (오류 검증 + 자동 복구 버전)
-========================================================
-
-v2 대비 추가된 부분
---------------------
-- 매 클릭 후 ANSWER_REGION(조립되고 있는 문장이 표시되는 영역)을 OCR로 확인해서
-  방금 클릭한 단어가 "정답 순서대로 정확히" 들어갔는지 검증한다.
-- 틀렸다면(엉뚱한 단어가 들어갔거나, 순서가 어긋났거나, 오타 인식 등):
-    1) 조립 영역에서 틀리기 시작한 지점까지 단어를 하나씩 되돌린다(undo).
-    2) 그 지점(= 마지막으로 확인된 정답 위치)부터 다시 시도한다.
-    3) 같은 지점에서 반복 실패하면(MAX_RETRIES_PER_WORD 초과) 프로그램을 정지한다.
-- 매 단어를 클릭하기 전, 버튼 풀(WORD_REGION)을 다시 스캔해서 좌표를 새로
-  찾는다. 버튼 위치가 매 클릭마다 재배치되는 앱에도 대응하기 위함이다.
-
-전제 조건 (중요)
------------------
-"되돌리기"는 [조립된 문장에서 단어를 다시 탭하면 풀로 돌아간다]는 동작을
-가정하고 구현했습니다. 여러분의 앱이 이렇게 동작하지 않는다면(예: 전체를
-한번에 지우는 "지우기" 버튼만 있는 경우) 아래 `undo_last_answer_word()`를
-`reset_answer_full()`로 교체하세요. 주석으로 예시를 남겨뒀습니다.
-
-사전 준비
----------
-pip install pytesseract pyautogui mss pillow
-+ Tesseract OCR 엔진 설치 (kor+eng 언어팩 포함)
-"""
-
-import time
-import pyautogui
-import pytesseract
+import arcade
 from PIL import Image
-import mss
 
-# ── 설정 ──────────────────────────────────────────────────────────
-REFERENCE_REGION = {"left": 100, "top": 100, "width": 800, "height": 100}  # 정답 문장 표시 영역
-WORD_REGION      = {"left": 100, "top": 300, "width": 800, "height": 200}  # 뒤섞인 단어 버튼 영역
-ANSWER_REGION    = {"left": 100, "top": 220, "width": 800, "height": 80}   # 조립 중인 문장 표시 영역
+window_width = 1280
+window_height = 720
 
-CLICK_DELAY   = 0.5   # 정상 클릭 사이 간격(초)
-VERIFY_DELAY  = 0.25  # 클릭 후 화면 갱신을 기다렸다가 검증하기까지 대기(초)
-UNDO_DELAY    = 0.3   # 되돌리기 클릭 사이 간격(초)
-POLL_INTERVAL = 0.5   # 버튼/문제가 안 보일 때 재확인 간격(초)
-WAIT_TIMEOUT  = 6.0   # 새 문제가 이만큼(초) 안 나타나면 정지
-MAX_RETRIES_PER_WORD = 3  # 같은 단어 위치에서 이 횟수 넘게 실패하면 정지
-
-OCR_LANG = "kor+eng"
-MIN_CONF = 40
+window = arcade.Window(
+    width=window_width,
+    height=window_height,
+    title="poop!",
+    fullscreen=True,
+    resizable=False
+)
+window.center_window()
 
 
-# ── 화면 캡처 + OCR 공통 함수 ─────────────────────────────────────
-def capture_region(region):
-    with mss.mss() as sct:
-        shot = sct.grab(region)
-        return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+class MenuButton:
+    """스프라이트 + 호버/눌림 효과 + 클릭 판정 + 클릭 시 실행할 함수를 묶은 클래스"""
 
+    NORMAL_COLOR = (255, 255, 255)
+    HOVER_COLOR = (255, 220, 160)
+    HOVER_SCALE = 1.1      # 마우스를 올렸을 때 커지는 배율
+    PRESSED_SCALE = 0.95   # 누르고 있을 때 줄어드는 배율
 
-def ocr_plain_text(region):
-    img = capture_region(region)
-    return pytesseract.image_to_string(img, lang=OCR_LANG).strip()
+    def __init__(self, sprite: arcade.Sprite, on_click, base_scale: float = 1.0):
+        self.sprite = sprite
+        self.on_click = on_click
+        self.base_scale = base_scale
 
+        # 클릭 판정 영역은 '원래 크기'로 고정한다.
+        # (호버로 버튼이 커졌다 작아져도 판정이 같이 변하면 가장자리에서 깜빡거리기 때문)
+        self.hit_w = sprite.texture.width * base_scale
+        self.hit_h = sprite.texture.height * base_scale
 
-def ocr_words_with_coords(region):
-    """텍스트+좌표+화면상 읽는 순서를 함께 반환 (버튼 풀, 조립 영역 공용)."""
-    img = capture_region(region)
-    data = pytesseract.image_to_data(
-        img, lang=OCR_LANG, output_type=pytesseract.Output.DICT
-    )
-    words = []
-    for i in range(len(data["text"])):
-        text = data["text"][i].strip()
-        conf = int(data["conf"][i]) if data["conf"][i] != "-1" else -1
-        if not text or conf < MIN_CONF:
-            continue
-        x = data["left"][i] + data["width"][i] // 2 + region["left"]
-        y = data["top"][i] + data["height"][i] // 2 + region["top"]
-        words.append({"text": text, "x": x, "y": y})
-    return words  # Tesseract 기본 순서 = 대략 좌->우, 위->아래 (읽는 순서)
+        self.set_state(hovered=False, pressed=False)
 
+    def contains(self, x: float, y: float) -> bool:
+        return (abs(x - self.sprite.center_x) <= self.hit_w / 2 and
+                abs(y - self.sprite.center_y) <= self.hit_h / 2)
 
-# ── 버튼 풀에서 특정 단어 찾기 ─────────────────────────────────────
-def find_word_button(target_text, exclude_coords=None):
-    """
-    WORD_REGION에서 target_text와 일치하는 버튼 좌표를 찾는다.
-    같은 텍스트가 여러 개 있을 수 있으므로, 이미 실패했던 좌표(exclude_coords)는
-    제외하고 다른 인스턴스를 시도할 수 있게 한다.
-    """
-    candidates = [w for w in ocr_words_with_coords(WORD_REGION) if w["text"] == target_text]
-    if exclude_coords:
-        candidates = [w for w in candidates if (w["x"], w["y"]) not in exclude_coords]
-    return candidates[0] if candidates else None
-
-
-# ── 조립 영역 상태 읽기 ────────────────────────────────────────────
-def get_answer_words():
-    return ocr_words_with_coords(ANSWER_REGION)
-
-
-# ── 되돌리기 ──────────────────────────────────────────────────────
-def undo_last_answer_word():
-    """
-    조립 영역의 마지막 단어를 클릭해서 풀로 되돌린다.
-    (전제: 조립된 단어를 탭하면 되돌아가는 UI)
-    """
-    current = get_answer_words()
-    if not current:
-        return
-    last = current[-1]
-    pyautogui.click(last["x"], last["y"])
-    print(f"  되돌리기: '{last['text']}' 제거")
-    time.sleep(UNDO_DELAY)
-
-
-# 대안: 전체 지우기 버튼이 따로 있는 앱이라면 이걸 대신 쓰세요.
-# RESET_BUTTON_COORD = (500, 250)  # "지우기" 버튼 좌표로 수정
-# def reset_answer_full():
-#     pyautogui.click(*RESET_BUTTON_COORD)
-#     time.sleep(UNDO_DELAY)
-
-
-def undo_to_length(target_length):
-    """조립 영역의 단어 개수가 target_length가 될 때까지 마지막 단어를 계속 제거."""
-    while True:
-        current = get_answer_words()
-        if len(current) <= target_length:
-            break
-        undo_last_answer_word()
-
-
-# ── 한 문장을 검증하며 클릭 (핵심 로직) ────────────────────────────
-def solve_sentence(reference_tokens):
-    """
-    reference_tokens 순서대로 버튼을 클릭하되, 매 클릭 후 조립 영역을 검증한다.
-    틀리면 해당 지점까지 되돌리고 같은 지점부터 재시도한다.
-    반환값: True(완료) / False(복구 실패로 중단)
-    """
-    index = 0
-    retries_at_index = 0
-    failed_coords_at_index = []  # 같은 지점에서 잘못 클릭했던 좌표 기록 (동일 텍스트 중복 버튼 대비)
-    button_wait_elapsed = 0.0
-
-    while index < len(reference_tokens):
-        target = reference_tokens[index]
-        btn = find_word_button(target, exclude_coords=failed_coords_at_index)
-
-        if btn is None:
-            # 아직 해당 단어 버튼이 화면에 안 떴을 수 있음 -> 짧게 대기 후 재시도
-            button_wait_elapsed += POLL_INTERVAL
-            if button_wait_elapsed >= WAIT_TIMEOUT:
-                print(f"'{target}' 버튼을 끝내 찾지 못했습니다. 중단합니다.")
-                return False
-            time.sleep(POLL_INTERVAL)
-            continue
-        button_wait_elapsed = 0.0
-
-        pyautogui.click(btn["x"], btn["y"])
-        time.sleep(VERIFY_DELAY)
-
-        answer_words = get_answer_words()
-        answer_texts = [w["text"] for w in answer_words]
-        expected_prefix = reference_tokens[: index + 1]
-
-        if answer_texts == expected_prefix:
-            print(f"[{index + 1}/{len(reference_tokens)}] '{target}' 정상 배치 확인")
-            index += 1
-            retries_at_index = 0
-            failed_coords_at_index = []
-            time.sleep(max(0.0, CLICK_DELAY - VERIFY_DELAY))
+    def set_state(self, hovered: bool, pressed: bool):
+        """상태(평소 / 호버 / 눌림)에 맞춰 색과 크기를 바꾼다."""
+        if pressed:
+            factor = self.PRESSED_SCALE
+        elif hovered:
+            factor = self.HOVER_SCALE
         else:
-            print(f"오류 감지! 기대: {expected_prefix} / 실제: {answer_texts}")
-            retries_at_index += 1
-            failed_coords_at_index.append((btn["x"], btn["y"]))
-
-            if retries_at_index > MAX_RETRIES_PER_WORD:
-                print(f"'{target}' 위치에서 {MAX_RETRIES_PER_WORD}회 넘게 실패 — 프로그램을 정지합니다.")
-                return False
-
-            print(f"  복구 중: {index}개까지만 남기고 되돌립니다...")
-            undo_to_length(index)  # 마지막으로 확인됐던 정답 지점까지 되돌림
-            # index는 그대로 유지 -> 같은 단어부터 재시도 (while 루프 처음으로)
-
-    print("문장 조립 완료.")
-    return True
+            factor = 1.0
+        self.sprite.scale = self.base_scale * factor
+        self.sprite.color = self.HOVER_COLOR if (hovered or pressed) else self.NORMAL_COLOR
 
 
-# ── 메인 감시 루프 ─────────────────────────────────────────────────
-def run():
-    print("감시를 시작합니다. Ctrl+C로 언제든 중단할 수 있습니다.")
-    last_reference = None
-    no_ref_elapsed = 0.0
+class poop(arcade.View):
+    def __init__(self):
+        super().__init__()
 
-    while True:
-        reference_sentence = ocr_plain_text(REFERENCE_REGION)
+        # 키 입력 상태
+        self.keypress = {
+            "W": False,
+            "S": False,
+            "A": False,
+            "D": False,
+            "F": False,
+            "Space": False,
+        }
 
-        if reference_sentence and reference_sentence != last_reference:
-            print(f"\n새 문제 인식: '{reference_sentence}'")
-            tokens = reference_sentence.split()
-            success = solve_sentence(tokens)
-            if not success:
-                break
-            last_reference = reference_sentence
-            no_ref_elapsed = 0.0
-            print("다음 문제를 기다립니다...")
+        # ================== 배경 ==================
+
+        self.lobby_images = arcade.load_texture(
+            "assets/images/lobby.png"
+        )
+
+        # ================== 캐릭터 ==================
+
+        self.player = arcade.Sprite(
+            path_or_texture="assets/images/DdongGo0101.jpg",
+            center_x=400,
+            center_y=300,
+            scale=0.1,
+            angle=0
+        )
+
+        self.character = [
+            {
+                "name": "DdongGo0101",
+                "texture": arcade.load_texture("assets/images/DdongGo0101.jpg"),
+                "speed": 250,
+                "scale": 0.1,
+            },
+            {
+                "name": "H_Tteok03",
+                "texture": arcade.load_texture("assets/images/H_Tteok03.jpg"),
+                "speed": 100,
+                "scale": 0.2
+            },
+            {
+                "name": "juni0928",
+                "texture": arcade.load_texture("assets/images/juni0928.jpg"),
+                "speed": 600,
+                "scale": 0.05
+            }
+        ]
+
+        self.state = 0
+        self.player_spin = 200
+        self.player_speed = self.character[0]["speed"]
+
+        self.object_list = arcade.SpriteList()
+        self.object_list.append(self.player)
+
+        # ================== 로비화면 설정 ==================
+
+        self.lobby_true = True  # 버튼 떠있는 화면이 True
+        button_image = Image.open("assets/images/buttons.png").convert("RGBA")
+        image_width, image_height = button_image.size
+
+        start_image = button_image.crop(
+            (0, 0, round(image_width / 3), image_height)
+        )
+        exit_image = button_image.crop(
+            (round(image_width / 3), 0, round(image_width * 2 / 3), image_height)
+        )
+        record_image = button_image.crop(
+            (round(image_width * 2 / 3), 0, image_width, image_height)
+        )
+
+        start_texture = arcade.Texture(image=start_image)
+        exit_texture = arcade.Texture(image=exit_image)
+        record_texture = arcade.Texture(image=record_image)
+
+        # ================ 버튼 크기 및 위치 ==================
+        button_scale = 1
+
+        start_sprite = arcade.Sprite(
+            start_texture, center_x=800, center_y=400, scale=button_scale
+        )
+        exit_sprite = arcade.Sprite(
+            exit_texture, center_x=950, center_y=220, scale=button_scale
+        )
+        record_sprite = arcade.Sprite(
+            record_texture, center_x=1100, center_y=400, scale=button_scale
+        )
+
+        # 스프라이트 + 클릭 시 실행할 함수를 묶어서 관리
+        self.buttons = [
+            MenuButton(start_sprite, self.click_start, button_scale),
+            MenuButton(exit_sprite, self.click_exit, button_scale),
+            MenuButton(record_sprite, self.click_record, button_scale),
+        ]
+
+        # 화면에 그리기 위한 SpriteList
+        self.button_list = arcade.SpriteList()
+        for button in self.buttons:
+            self.button_list.append(button.sprite)
+
+        self.hovered_button = None   # 지금 마우스가 올라가 있는 버튼
+        self.pressed_button = None   # 마우스 왼쪽 버튼을 '누른 채'인 버튼
+
+    # ================== 버튼 클릭 시 동작 ==================
+
+    def click_start(self):
+        self.lobby_true = False
+        self.reset_buttons()
+
+    def click_record(self):
+        print("해당 기능(기록)은 준비중 :)")
+
+    def click_exit(self):
+        arcade.exit()
+
+    # ================== 버튼 상태 도우미 ==================
+
+    def button_at(self, x, y):
+        """(x, y) 위치에 있는 버튼을 돌려준다. 없으면 None"""
+        for button in self.buttons:
+            if button.contains(x, y):
+                return button
+        return None
+
+    def reset_buttons(self):
+        """모든 버튼을 평소 상태로 되돌린다 (화면 전환할 때 사용)"""
+        self.hovered_button = None
+        self.pressed_button = None
+        for button in self.buttons:
+            button.set_state(hovered=False, pressed=False)
+
+    def refresh_buttons(self):
+        """hovered_button / pressed_button 값에 맞춰 모든 버튼의 모양을 갱신"""
+        for button in self.buttons:
+            is_pressed = button is self.pressed_button
+            # 누른 채로 다른 곳으로 끌고 가면 눌림 효과는 잠시 풀리고,
+            # 다시 원래 버튼 위로 돌아오면 눌림 효과가 돌아온다.
+            show_pressed = is_pressed and button is self.hovered_button
+            button.set_state(
+                hovered=(button is self.hovered_button),
+                pressed=show_pressed
+            )
+
+    # ================== 화면 그리기 ==================
+
+    def on_draw(self):
+        self.clear()
+
+        arcade.draw_texture_rect(
+            self.lobby_images,
+            arcade.XYWH(
+                self.window.width / 2,
+                self.window.height / 2,
+                self.window.width,
+                self.window.height
+            )
+        )
+
+        if self.lobby_true:
+            self.button_list.draw()
         else:
-            no_ref_elapsed += POLL_INTERVAL
-            if no_ref_elapsed >= WAIT_TIMEOUT and not reference_sentence:
-                print("시간 초과: 더 이상 새 문제가 나타나지 않아 프로그램을 정지합니다.")
-                break
-            time.sleep(POLL_INTERVAL)
+            self.object_list.draw()
 
-    print("종료되었습니다.")
+    # ================== 마우스 이벤트 ==================
+
+    def on_mouse_motion(self, x, y, dx, dy):
+        """호버: 마우스가 올라간 버튼을 기록하고 모양을 바꾼다."""
+        if not self.lobby_true:
+            return
+        self.hovered_button = self.button_at(x, y)
+        self.refresh_buttons()
+
+    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+        """버튼을 누른 채로 마우스를 움직일 때도 호버 상태를 갱신한다."""
+        self.on_mouse_motion(x, y, dx, dy)
+
+    def on_mouse_press(self, x, y, mouse_button, modifiers):
+        """누르는 순간에는 '어느 버튼을 눌렀는지'만 기록한다. (아직 클릭 아님)"""
+        if not self.lobby_true or mouse_button != arcade.MOUSE_BUTTON_LEFT:
+            return
+        self.hovered_button = self.button_at(x, y)
+        self.pressed_button = self.hovered_button
+        self.refresh_buttons()
+
+    def on_mouse_release(self, x, y, mouse_button, modifiers):
+        """뗄 때: 누른 버튼과 같은 버튼 위에서 뗐을 때만 클릭으로 인정한다."""
+        if not self.lobby_true or mouse_button != arcade.MOUSE_BUTTON_LEFT:
+            return
+
+        pressed = self.pressed_button
+        released_on = self.button_at(x, y)
+
+        # 상태를 먼저 정리한 뒤에 클릭 동작을 실행한다.
+        # (클릭 동작이 화면을 바꾸면서 reset_buttons를 호출할 수 있기 때문)
+        self.pressed_button = None
+        self.hovered_button = released_on
+        self.refresh_buttons()
+
+        if pressed is not None and pressed is released_on:
+            pressed.on_click()
+
+    # ================== 키 입력 ==================
+
+    def on_key_press(self, key, modifiers):
+        if key == arcade.key.ESCAPE:
+            if not self.lobby_true:
+                self.lobby_true = True
+                self.reset_buttons()
+            return
+
+        if self.lobby_true:
+            return
+
+        if key == arcade.key.W:
+            self.keypress["W"] = True
+
+        elif key == arcade.key.S:
+            self.keypress["S"] = True
+
+        elif key == arcade.key.A:
+            self.keypress["A"] = True
+
+        elif key == arcade.key.D:
+            self.keypress["D"] = True
+
+        elif key == arcade.key.SPACE:
+            self.keypress["Space"] = True
+
+        elif key == arcade.key.F:
+            self.state = (self.state + 1) % len(self.character)
+
+            self.player.texture = self.character[self.state]["texture"]
+            self.player.scale = self.character[self.state]["scale"]
+            self.player_speed = self.character[self.state]["speed"]
+
+    # ================== 키 입력 해제 ==================
+
+    def on_key_release(self, key, modifiers):
+        if key == arcade.key.W:
+            self.keypress["W"] = False
+
+        elif key == arcade.key.S:
+            self.keypress["S"] = False
+
+        elif key == arcade.key.A:
+            self.keypress["A"] = False
+
+        elif key == arcade.key.D:
+            self.keypress["D"] = False
+
+        elif key == arcade.key.SPACE:
+            self.keypress["Space"] = False
+
+    # ================== 게임 업데이트 ==================
+
+    def on_update(self, delta_time):
+        if self.lobby_true:
+            return
+
+        if self.keypress["W"]:
+            self.player.center_y += self.player_speed * delta_time
+
+        if self.keypress["S"]:
+            self.player.center_y -= self.player_speed * delta_time
+
+        if self.keypress["A"]:
+            self.player.center_x -= self.player_speed * delta_time
+
+        if self.keypress["D"]:
+            self.player.center_x += self.player_speed * delta_time
+
+        if self.keypress["Space"]:
+            self.player.angle += self.player_spin * delta_time
 
 
-# ── 좌표 확인용 보조 도구 ──────────────────────────────────────────
-def print_mouse_position(duration=15):
-    print(f"{duration}초 동안 마우스 좌표를 출력합니다.")
-    end = time.time() + duration
-    try:
-        while time.time() < end:
-            x, y = pyautogui.position()
-            print(f"\r현재 좌표: ({x}, {y})   ", end="")
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        pass
-    print()
-
-
-if __name__ == "__main__":
-    # 좌표(REFERENCE_REGION / WORD_REGION / ANSWER_REGION)를 모르면
-    # 아래 줄 주석을 풀고 먼저 실행해서 확인하세요.
-    # print_mouse_position()
-
-    run()
+window.show_view(poop())
+arcade.run()
