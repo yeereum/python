@@ -13,6 +13,10 @@ window = arcade.Window(
 )
 window.center_window()
 
+class button:
+    def __init__(self):
+        pass
+
 
 class poop(arcade.View):
     def __init__(self):

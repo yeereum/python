@@ -15,8 +15,6 @@ window.center_window()
 
 
 class MenuButton:
-    """스프라이트 + 호버/눌림 효과 + 클릭 판정 + 클릭 시 실행할 함수를 묶은 클래스"""
-
     NORMAL_COLOR = (255, 255, 255)
     HOVER_COLOR = (255, 220, 160)
     HOVER_SCALE = 1.1      # 마우스를 올렸을 때 커지는 배율
@@ -27,8 +25,6 @@ class MenuButton:
         self.on_click = on_click
         self.base_scale = base_scale
 
-        # 클릭 판정 영역은 '원래 크기'로 고정한다.
-        # (호버로 버튼이 커졌다 작아져도 판정이 같이 변하면 가장자리에서 깜빡거리기 때문)
         self.hit_w = sprite.texture.width * base_scale
         self.hit_h = sprite.texture.height * base_scale
 
