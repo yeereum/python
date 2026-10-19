@@ -1,5 +1,35 @@
 import arcade
 
+class Fadein:
+    def __init__(self, duration=1.0):
+        self.duration = max(duration, 0.001)
+        self.elapsed_time = 0.0
+        self.active = False
+        self.started = False
+
+    def start(self):
+        self.elapsed_time = 0.0
+        self.active = True
+        self.started = True
+
+    def update(self, delta_time):
+        if not self.active:
+            return
+
+        self.elapsed_time += delta_time
+
+        if self.elapsed_time >= self.duration:
+            self.elapsed_time = self.duration
+            self.active = False
+
+    @property
+    def alpha(self):
+        if not self.started:
+            return 0
+
+        progress = min(self.elapsed_time / self.duration, 1.0)
+        return int(255 * progress)
+
 class Poop_boss(arcade.Sprite):
     def __init__(self, frames, scale):
         super().__init__(frames[0], scale=scale)
@@ -22,16 +52,13 @@ class StartAnima(arcade.View):
         super().__init__()
         self.elapsed_time = 0
 
-        self.arm_index = 0                  # 똥 팔 인덱스
-        self.heart_index = 0                # 하트 인덱스
-        
+        self.arm_index = 0
+        self.heart_index = 0
         poop_boss_size = 0.5
 
-        self.box_elapsed_time = 0           # 흰 테두리 페이드인
-        self.box_fade_duration = 3
-
-        self.heart_elapsed_time = 0         # 하트 페이드인
-        self.heart_fade_duration = 1
+        self.box_fade = Fadein(duration=3.0)
+        self.heart_fade = Fadein(duration=1.0)
+        self.poop_fade = Fadein(duration=0.7)
 
         self.lobby_true = True
         self.box_true = False
@@ -40,7 +67,10 @@ class StartAnima(arcade.View):
         self.event = [
             {
                 "time": 3.0,
-                "action": lambda: arcade.play_sound(self.fire_sounds, speed=3),
+                "action": lambda: (
+                    arcade.play_sound(self.fire_sounds, speed=3),
+                    self.poop_fade.start()
+                ),
                 "done": False
             },
             {
@@ -129,6 +159,9 @@ class StartAnima(arcade.View):
         self.DdongGo_list = arcade.SpriteList()
         self.DdongGo_list.append(self.DdongGo)
 
+        self.poop_body.alpha = 0
+        self.poop_arm.alpha = 0
+
         self.poop_boss_list = arcade.SpriteList()
         self.poop_boss_list.append(self.poop_body)
         self.poop_boss_list.append(self.poop_arm)
@@ -153,6 +186,9 @@ class StartAnima(arcade.View):
     def box_appear(self):
         self.box_true = True
         self.heart_true = True
+
+        self.box_fade.start()
+        self.heart_fade.start()
 
     def run_game(self):
         from game import Game
@@ -181,21 +217,20 @@ class StartAnima(arcade.View):
                     width=700,
                     height=400
                 ),
-                color=(255, 255, 255,
-                    int(255 * min(self.box_elapsed_time / self.box_fade_duration, 1))
+                color=(255, 255, 255, self.box_fade.alpha
                 ),
                 border_width=5
             )
 
         if self.heart_true:
-            heart_opacity = int(255 * min(self.heart_elapsed_time / self.heart_fade_duration, 1))
-
             for heart in self.heart_list:
-                heart.alpha = heart_opacity
+                heart.alpha = self.heart_fade.alpha
 
             self.heart_list.draw()
 
         if self.elapsed_time >= 3:
+            self.poop_body.alpha = self.poop_fade.alpha
+            self.poop_arm.alpha = self.poop_fade.alpha
             self.poop_boss_list.draw()
         
         self.DdongGo_list.draw()
@@ -203,10 +238,9 @@ class StartAnima(arcade.View):
     def on_update(self, delta_time):
         self.elapsed_time += delta_time
 
-        if self.box_true:
-            self.box_elapsed_time += delta_time
-        if self.heart_true:
-            self.heart_elapsed_time += delta_time
+        self.box_fade.update(delta_time)
+        self.heart_fade.update(delta_time)
+        self.poop_fade.update(delta_time)
 
         for event in self.event:
             if not event["done"] and self.elapsed_time >= event["time"]:
