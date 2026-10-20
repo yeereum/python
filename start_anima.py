@@ -50,11 +50,8 @@ class Poop_boss(arcade.Sprite):
 class StartAnima(arcade.View):
     def __init__(self):
         super().__init__()
+        
         self.elapsed_time = 0
-
-        self.arm_index = 0
-        self.heart_index = 0
-        poop_boss_size = 0.5
 
         self.box_fade = Fadein(duration=3.0)
         self.heart_fade = Fadein(duration=1.0)
@@ -100,7 +97,7 @@ class StartAnima(arcade.View):
                 "done": False,
             },
             {
-                "time": 13.0,
+                "time": 11.5,
                 "action": lambda: self.run_game(),
                 "done": False,
             }
@@ -128,22 +125,25 @@ class StartAnima(arcade.View):
         poop_arm_sheet = arcade.load_spritesheet("assets/images/poop/arm.png")
         self.poop_arm_frames = poop_arm_sheet.get_texture_grid(size=(1120, 720), columns=2, count=5)
 
+        poop_boss_scale = 0.5
+
         self.poop_body = Poop_boss(
             poop_body_frames,
-            scale=poop_boss_size
+            scale=poop_boss_scale
         )
         self.poop_body.position = (
             self.window.width / 2, 650
         )
 
+        self.arm_index = 0
+
         self.poop_arm = arcade.Sprite(
             self.poop_arm_frames[self.arm_index],
-            scale=poop_boss_size
+            scale=poop_boss_scale
         )
-        self.poop_arm.position = (
-            self.poop_body.center_x,
-            self.poop_body.center_y
-        )
+        self.poop_arm.position = self.poop_body.position
+
+        self.heart_index = 0
 
         self.heart = arcade.Sprite(
             self.heart_texture[self.heart_index],
@@ -217,9 +217,9 @@ class StartAnima(arcade.View):
                     width=700,
                     height=400
                 ),
-                color=(255, 255, 255, self.box_fade.alpha
+                color = (255, 255, 255, self.box_fade.alpha
                 ),
-                border_width=5
+                border_width = 5
             )
 
         if self.heart_true:
@@ -247,14 +247,10 @@ class StartAnima(arcade.View):
                 event["action"]()
                 event["done"] = True
 
-        if self.DdongGo.center_y <= 250:
-            self.DdongGo.center_y += 170 * delta_time
+        if self.DdongGo.center_y <= 300:
+            self.DdongGo.center_y += 180 * delta_time
 
         self.poop_boss_list.update_animation(delta_time)
-
-    def on_key_press(self, key, modifiers):
-        if key == arcade.key.ESCAPE:
-            arcade.exit()
 
 if __name__ == "__main__":
     window = arcade.Window(
