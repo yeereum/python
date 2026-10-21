@@ -53,7 +53,7 @@ class StartAnima(arcade.View):
         
         self.elapsed_time = 0
 
-        self.box_fade = Fadein(duration=3.0)
+        self.box_fade = Fadein(duration=2.0)
         self.heart_fade = Fadein(duration=1.0)
         self.poop_fade = Fadein(duration=0.7)
 

@@ -1,4 +1,3 @@
-
 import arcade
 
 
@@ -60,13 +59,17 @@ class Game(arcade.View):
 
         self.box_width = 700
         self.box_height = 400
+        self.box_center_x = self.window.width / 2
         self.box_center_y = 300
         self.box_border_width = 5
 
-        self.hp_bar_width = 300
-        self.hp_bar_height = 18
+        self.hp_bar_width = 500
+        self.hp_bar_height = 20
         self.hp_bar_x = self.window.width / 2
         self.hp_bar_y = 800
+
+        self.max_hp = 5
+        self.player_hp = 5
 
         self.heart_sheet = arcade.load_spritesheet(
             "assets/images/game/heart.png"
@@ -79,15 +82,13 @@ class Game(arcade.View):
         )
 
         self.heart_scale = 0.3
-        self.max_hp = 5
-        self.player_hp = 5
 
         self.heart_positions = [
-            (100, 350),
-            (200, 350),
-            (300, 350),
-            (100, 250),
-            (200, 250),
+            (100, 400),
+            (200, 400),
+            (300, 400),
+            (100, 300),
+            (200, 300),
         ]
 
         self.heart_list = arcade.SpriteList()
@@ -102,25 +103,27 @@ class Game(arcade.View):
 
         self.spare_heart = None
         self.max_spare_hearts = 1
-        self.spare_heart_position = (300, 250)
+        self.spare_heart_position = (300, 300)
+
+        self.spare_heart_list = arcade.SpriteList()
 
         self.player = arcade.Sprite(
             "assets/images/game/DdongGo.png",
             scale=0.1,
         )
         self.player.position = (
-            self.window.width / 2,
+            self.box_center_x,
             self.box_center_y,
         )
 
         self.player_list = arcade.SpriteList()
         self.player_list.append(self.player)
 
-        body_sheet = arcade.load_spritesheet(
+        poop_body_sheet = arcade.load_spritesheet(
             "assets/images/poop/body.png"
         )
 
-        self.body_frames = body_sheet.get_texture_grid(
+        self.poop_body_frames = poop_body_sheet.get_texture_grid(
             size=(1120, 720),
             columns=2,
             count=8,
@@ -129,7 +132,7 @@ class Game(arcade.View):
         self.boss_scale = 0.5
 
         self.poop_body = Poop_boss(
-            self.body_frames,
+            self.poop_body_frames,
             scale=self.boss_scale,
         )
         self.poop_body.position = (
@@ -137,20 +140,20 @@ class Game(arcade.View):
             650,
         )
 
-        arm_sheet = arcade.load_spritesheet(
+        poop_arm_sheet = arcade.load_spritesheet(
             "assets/images/poop/arm.png"
         )
 
-        self.arm_frames = arm_sheet.get_texture_grid(
+        self.poop_arm_frames = poop_arm_sheet.get_texture_grid(
             size=(1120, 720),
             columns=2,
             count=5,
         )
 
-        self.arm_index = 0
+        self.poop_arm_index = 0
 
         self.poop_arm = arcade.Sprite(
-            self.arm_frames[self.arm_index],
+            self.poop_arm_frames[self.poop_arm_index],
             scale=self.boss_scale,
         )
         self.poop_arm.position = self.poop_body.position
@@ -159,10 +162,10 @@ class Game(arcade.View):
         self.poop_boss_list.append(self.poop_body)
         self.poop_boss_list.append(self.poop_arm)
 
-        self.boss_max_hp = 100
-        self.boss_hp = 100
+        self.boss_max_hp = 1000
+        self.boss_hp = 1000
 
-    def change_heart_texture(self, index, texture_index):
+    def change_heart(self, index, texture_index):
         if not 0 <= index < len(self.heart_list):
             return
 
@@ -180,14 +183,31 @@ class Game(arcade.View):
             scale=self.heart_scale,
         )
         self.spare_heart.position = self.spare_heart_position
+        self.spare_heart_list.append(self.spare_heart)
 
     def remove_spare_heart(self):
+        self.spare_heart_list.clear()
         self.spare_heart = None
 
     def arm_form(self, index):
         if 0 <= index < len(self.arm_frames):
             self.arm_index = index
             self.poop_arm.texture = self.arm_frames[index]
+
+    def damage(self):
+        if self.player_hp <= 0 and self.spare_heart is None:
+            return
+
+        if self.spare_heart is None: 
+            self.player_hp -= 1
+
+            self.change_heart(
+                self.player_hp,
+                2,
+            )
+
+        if self.spare_heart is not None:
+            self.remove_spare_heart()
 
     def attack(self):
         print("공격!")
@@ -197,23 +217,21 @@ class Game(arcade.View):
 
         arcade.draw_rect_outline(
             arcade.XYWH(
-                self.window.width / 2,
+                self.box_center_x,
                 self.box_center_y,
                 self.box_width,
                 self.box_height,
             ),
             color = (255, 255, 255),
-            border_width = 5,
+            border_width = self.box_border_width,
         )
 
         self.heart_list.draw()
-
-        if self.spare_heart is not None:
-            self.spare_heart.draw()
-
+        self.spare_heart_list.draw()
         self.poop_boss_list.draw()
         self.player_list.draw()
 
+        # 체력바 바탕색
         arcade.draw_rect_filled(
             arcade.XYWH(
                 self.hp_bar_x,
@@ -224,6 +242,7 @@ class Game(arcade.View):
             (70, 30, 30),
         )
 
+        # 체력바 현재 체력
         hp_ratio = self.boss_hp / self.boss_max_hp
 
         if hp_ratio > 0:
@@ -255,6 +274,7 @@ class Game(arcade.View):
         if arcade.key.S in self.moving_keys:
             move_y -= 1
 
+        # 대각선 보정
         if move_x != 0 and move_y != 0:
             move_x *= 0.70710678
             move_y *= 0.70710678
@@ -262,27 +282,24 @@ class Game(arcade.View):
         self.player.center_x += move_x * self.move_speed * delta_time
         self.player.center_y += move_y * self.move_speed * delta_time
 
-        left = self.window.width / 2 - self.box_width / 2
-        right = self.window.width / 2 + self.box_width / 2
-        bottom = self.box_center_y - self.box_height / 2
-        top = self.box_center_y + self.box_height / 2
-
-        half_width = self.player.width / 2
-        half_height = self.player.height / 2
+        box_left = self.box_center_x - self.box_width / 2
+        box_right = self.box_center_x + self.box_width / 2
+        box_bottom = self.box_center_y - self.box_height / 2
+        box_top = self.box_center_y + self.box_height / 2
 
         self.player.center_x = max(
-            left + self.box_border_width + half_width,
+            box_left + self.box_border_width + self.player.width / 2,
             min(
                 self.player.center_x,
-                right - self.box_border_width - half_width,
+                box_right - self.box_border_width - self.player.height / 2,
             ),
         )
 
         self.player.center_y = max(
-            bottom + self.box_border_width + half_height,
+            box_bottom + self.box_border_width + self.player.height / 2,
             min(
                 self.player.center_y,
-                top - self.box_border_width - half_height,
+                box_top - self.box_border_width - self.player.height / 2,
             ),
         )
 
@@ -300,6 +317,15 @@ class Game(arcade.View):
 
         elif key == arcade.key.ESCAPE:
             arcade.exit()
+
+        elif key == arcade.key.E:
+            self.add_spare_heart()
+
+        elif key == arcade.key.Q:
+            self.remove_spare_heart()
+
+        elif key == arcade.key.F:
+            self.damage()
 
     def on_key_release(self, key, modifiers):
         self.moving_keys.discard(key)
