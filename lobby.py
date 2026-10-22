@@ -36,16 +36,12 @@ class Lobby(arcade.View):
     def __init__(self):
         super().__init__()
 
-        # ================== 제목 ==================
-
         self.title = arcade.Sprite(
             path_or_texture="assets/images/lobby/title.png",
             center_x = self.window.width / 2,
             center_y = 650,
             scale = 0.9
         )
-
-        # ================== 배경 ==================
 
         self.lobby_images = arcade.load_texture(
             "assets/images/lobby/lobby.png"
@@ -57,8 +53,6 @@ class Lobby(arcade.View):
 
         self.title_list = arcade.SpriteList()
         self.title_list.append(self.title)
-
-        # ================== 로비화면 설정 ==================
 
         self.lobby_true = True
         button_image = Image.open("assets/images/lobby/buttons.png").convert("RGBA")
@@ -78,7 +72,6 @@ class Lobby(arcade.View):
         exit_texture = arcade.Texture(image=exit_image)
         record_texture = arcade.Texture(image=record_image)
 
-        # ================ 버튼 크기 및 위치 ==================
         button_scale = 1
 
         start_sprite = arcade.Sprite(
@@ -104,8 +97,6 @@ class Lobby(arcade.View):
         self.hovered_button = None
         self.pressed_button = None
 
-    # ================== 버튼 클릭 시 동작 ==================
-
     def click_start(self):
         from start_anima import StartAnima
         self.reset_buttons()
@@ -116,8 +107,6 @@ class Lobby(arcade.View):
 
     def click_exit(self):
         arcade.exit()
-
-    # ================== 버튼 상태 도우미 ====================
 
     def button_at(self, x, y):
         for Button in self.buttons:
@@ -140,8 +129,6 @@ class Lobby(arcade.View):
                 pressed=show_pressed
             )
 
-    # ================== 화면 그리기 ==================
-
     def on_draw(self):
         self.clear()
 
@@ -157,8 +144,6 @@ class Lobby(arcade.View):
 
         self.button_list.draw()
         self.title_list.draw()
-
-    # ================== 마우스 이벤트 ==================
 
     def on_mouse_motion(self, x, y, dx, dy):
         if not self.lobby_true:

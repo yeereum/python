@@ -54,20 +54,31 @@ class Game(arcade.View):
     def __init__(self):
         super().__init__()
 
+        arcade.load_font("assets/fonts/PressStart2P.ttf")
+
+        self.game_over_true = False
+
+        # 플레이어 이동속도
         self.move_speed = 300
         self.moving_keys = set()
 
+        # 타이머
+        self.remain_time = 20
+
+        # 흰 박스 속성
         self.box_width = 700
         self.box_height = 400
         self.box_center_x = self.window.width / 2
         self.box_center_y = 300
         self.box_border_width = 5
 
+        # 체력바
         self.hp_bar_width = 500
         self.hp_bar_height = 20
         self.hp_bar_x = self.window.width / 2
         self.hp_bar_y = 800
 
+        # 플레이어 하트
         self.max_hp = 5
         self.player_hp = 5
 
@@ -206,11 +217,26 @@ class Game(arcade.View):
                 2,
             )
 
+            self.player.color = (200, 40, 40) # 페이드아웃으로 색 다시 빠지게 할거임
+
         if self.spare_heart is not None:
             self.remove_spare_heart()
 
     def attack(self):
         print("공격!")
+
+    def game_over(self):
+        if self.game_over_true:
+            return
+
+        if self.remain_time <= 0:
+            self.game_over_true = True
+
+        elif self.player_hp <= 0:
+            self.game_over_true = True
+
+        if self.game_over_true:
+            print("게임 종료")
 
     def on_draw(self):
         self.clear()
@@ -258,9 +284,42 @@ class Game(arcade.View):
                 (230, 60, 60),
             )
 
+        timer_min = int(self.remain_time) // 60
+        timer_sec = int(self.remain_time) % 60
+        timer_color = arcade.color.WHITE
+
+        if self.remain_time < 11:
+            timer_color = arcade.color.RED
+
+        arcade.draw_text(
+            "TIMER",
+            1320,
+            400,
+            color=timer_color,
+            font_size=20,
+            font_name="Press Start 2P",
+            anchor_x="center",
+        )
+
+        arcade.draw_text(
+            f"{timer_min:02d}:{timer_sec:02d}",
+            1320,
+            350,
+            color=timer_color,
+            font_size=30,
+            font_name="Press Start 2P",
+            anchor_x="center",
+        )
+
     def on_update(self, delta_time):
         self.poop_body.update_animation(delta_time)
         self.poop_arm.position = self.poop_body.position
+
+        if self.remain_time > 0:
+            self.remain_time -= delta_time
+            self.remain_time = max(0, self.remain_time)
+        
+        self.game_over()
 
         move_x = 0
         move_y = 0
@@ -291,7 +350,7 @@ class Game(arcade.View):
             box_left + self.box_border_width + self.player.width / 2,
             min(
                 self.player.center_x,
-                box_right - self.box_border_width - self.player.height / 2,
+                box_right - self.box_border_width - self.player.width / 2,
             ),
         )
 
@@ -329,7 +388,6 @@ class Game(arcade.View):
 
     def on_key_release(self, key, modifiers):
         self.moving_keys.discard(key)
-
 
 if __name__ == "__main__":
     window = arcade.Window(
