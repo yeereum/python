@@ -63,7 +63,7 @@ class Game(arcade.View):
         self.moving_keys = set()
 
         # 타이머
-        self.remain_time = 20
+        self.remain_time = 180
 
         # 흰 박스 속성
         self.box_width = 700
@@ -240,6 +240,8 @@ class Game(arcade.View):
 
     def on_draw(self):
         self.clear()
+
+        self.background_color = (10, 11, 18)
 
         arcade.draw_rect_outline(
             arcade.XYWH(

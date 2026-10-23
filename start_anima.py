@@ -53,7 +53,7 @@ class StartAnima(arcade.View):
         
         self.elapsed_time = 0
 
-        self.box_fade = Fadein(duration=2.0)
+        self.box_fade = Fadein(duration=1.5)
         self.heart_fade = Fadein(duration=1.0)
         self.poop_fade = Fadein(duration=0.7)
 
@@ -97,7 +97,7 @@ class StartAnima(arcade.View):
                 "done": False,
             },
             {
-                "time": 11.5,
+                "time": 10.5,
                 "action": lambda: self.run_game(),
                 "done": False,
             }
@@ -149,11 +149,11 @@ class StartAnima(arcade.View):
             self.heart_texture[self.heart_index],
         )
         self.heart_position = [
-            (100, 350),
-            (200, 350),
-            (300, 350),
-            (100, 250),
-            (200, 250)
+            (100, 400),
+            (200, 400),
+            (300, 400),
+            (100, 300),
+            (200, 300)
         ]
 
         self.DdongGo_list = arcade.SpriteList()
@@ -176,7 +176,6 @@ class StartAnima(arcade.View):
             self.heart_list.append(heart)
 
     def change_bg(self):
-        self.background_color = (10, 11, 18)
         self.lobby_true = False
 
     def arm_form(self, index):
@@ -197,6 +196,8 @@ class StartAnima(arcade.View):
 
     def on_draw(self):
         self.clear()
+
+        self.background_color = (10, 11, 18)
 
         if self.lobby_true:
             arcade.draw_texture_rect(
