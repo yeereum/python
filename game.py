@@ -1,39 +1,9 @@
 import arcade
 import json
 from pathlib import Path
+from pattern import Boss_pattern
 
 record_file = Path(__file__).resolve().parent / "record.json"
-
-class Fadein:
-    def __init__(self, duration=1.0):
-        self.duration = max(duration, 0.001)
-        self.elapsed_time = 0
-        self.active = False
-        self.started = False
-
-    def start(self):
-        self.elapsed_time = 0
-        self.active = True
-        self.started = True
-
-    def update(self, delta_time):
-        if not self.active:
-            return
-
-        self.elapsed_time += delta_time
-
-        if self.elapsed_time >= self.duration:
-            self.elapsed_time = self.duration
-            self.active = False
-
-    @property
-    def alpha(self):
-        if not self.started:
-            return 0
-
-        progress = min(self.elapsed_time / self.duration, 1.0)
-        return int(255 * progress)
-
 
 class Poop_boss(arcade.Sprite):
     def __init__(self, frames, scale):
@@ -58,14 +28,18 @@ class Game(arcade.View):
 
         arcade.load_font("assets/fonts/PressStart2P.ttf")
 
+        self.boss_pattern = Boss_pattern(self)
+
         # 게임오버 설정
         self.game_over_true = False
         self.final_score = 0
 
+        # 게임 클리어 설정
+        self.game_clear_true = False
+
         # 커서 깜빡임
         self.cursor_time = 0
         self.cursor_visible = True
-        self.ignore_next_text = False
 
         # 플레이어 이동
         self.move_speed = 300
@@ -136,6 +110,10 @@ class Game(arcade.View):
         self.player_list = arcade.SpriteList()
         self.player_list.append(self.player)
 
+        # 피격 이펙트
+        self.damage_color_time = 0
+        self.damage_color_duration = 0.4
+
         poop_body_sheet = arcade.load_spritesheet(
             "assets/images/poop/body.png"
         )
@@ -185,13 +163,14 @@ class Game(arcade.View):
         self.active_input = "user_name"  # 게임오버 창에서 선택되어 있는 입력칸
 
         self.record_saved = False
-        self.save_status = ""
+        self.save_status = ""            # 게임 피니쉬 상태 메세지
         self.mouse_x = 0
         self.mouse_y = 0
         self.save_button_hovered = False
 
-        self.name_max_length = 24
-        self.player_info_max_length = 48
+        # 최대 글자 수
+        self.name_max_length = 10
+        self.player_info_max_length = 10
 
         self.name_field = arcade.XYWH(
             self.window.width / 2, 455, 500, 48
@@ -213,7 +192,7 @@ class Game(arcade.View):
         self.heart_list[index].texture = self.heart_textures[texture_index]
 
     def add_spare_heart(self):
-        if self.spare_heart is not None or self.game_over_true:
+        if self.spare_heart is not None or self.game_over_true or self.game_clear_true:
             return
 
         self.spare_heart = arcade.Sprite(
@@ -233,7 +212,7 @@ class Game(arcade.View):
             self.poop_arm.texture = self.poop_arm_frames[index]
 
     def damage(self):
-        if self.game_over_true:
+        if self.game_over_true or self.game_clear_true:
             return
 
         if self.spare_heart is not None:
@@ -243,35 +222,50 @@ class Game(arcade.View):
         if self.player_hp <= 0:
             self.game_over()
             return
-
+        
         self.player_hp -= 1
         self.change_heart(self.player_hp, 2)
-        self.player.color = (200, 40, 40)
-
-        self.game_over()
+        self.damage_color_time = self.damage_color_duration
+        self.player.color = (255, 0, 0)
 
     def attack(self):
-        if self.game_over_true:
+        if self.game_over_true or self.game_clear_true:
             return
 
+        if self.boss_hp <= 0:
+            self.game_clear()
+            return
+        
         if self.boss_hp > 0:
             self.boss_hp = max(
                 0,
                 self.boss_hp - self.attack_damage,
             )
 
-        print("공격!")
-
     def game_over(self):
         if self.game_over_true:
             return
 
         if self.remain_time <= 0 or self.player_hp <= 0:
+            self.game_clear_true = False
             self.game_over_true = True
 
         if self.game_over_true:
             self.moving_keys.clear()
-            self.final_score = (self.boss_max_hp - self.boss_hp) * 3 + int(self.remain_time) * 10
+            self.final_score = (self.boss_max_hp - self.boss_hp) * 10
+
+    def game_clear(self):
+        if self.game_clear_true:
+            return
+
+        if self.remain_time > 0 and self.player_hp > 0 and self.boss_hp <= 0:
+            self.game_over_true = False
+            self.game_clear_true = True
+        
+        if self.game_clear_true:
+            self.moving_keys.clear()
+            self.final_score = (self.boss_max_hp - self.boss_hp) * 10 + int(self.remain_time) * 50
+
 
     def draw_game_over_overlay(self):
         # 화면 전체 반투명 배경
@@ -309,7 +303,10 @@ class Game(arcade.View):
         )
 
         # 게임오버 or 클리어 텍스트
-        self.game_over_text = "GAME OVER"
+        if self.game_clear_true:
+            self.game_over_text = "GAME CLEAR!"
+        else:
+            self.game_over_text = "GAME OVER"
 
         arcade.draw_text(
             self.game_over_text,
@@ -558,6 +555,8 @@ class Game(arcade.View):
     def on_draw(self):
         self.clear(color=(10, 11, 18))
 
+        self.boss_pattern.draw()
+
         arcade.draw_rect_outline(
             arcade.XYWH(
                 self.box_center_x,
@@ -627,11 +626,13 @@ class Game(arcade.View):
             anchor_x="center",
         )
 
-        if self.game_over_true:
+        if self.game_over_true or self.game_clear_true:
             self.draw_game_over_overlay()
 
     def on_update(self, delta_time):
-        if self.game_over_true:
+        self.boss_pattern.update(delta_time)
+
+        if self.game_over_true or self.game_clear_true:
             self.cursor_time += delta_time
             if self.cursor_time >= 0.5:          # 커서 깜빡임 시간
                 self.cursor_time = 0
@@ -641,6 +642,24 @@ class Game(arcade.View):
         self.poop_body.update_animation(delta_time)
         self.poop_arm.position = self.poop_body.position
 
+        if self.damage_color_time > 0:
+            self.damage_color_time = max(
+                0,
+                self.damage_color_time - delta_time,
+            )
+
+            progress = self.damage_color_time / self.damage_color_duration
+
+            self.player.color = tuple(
+                int(original + (red - original) * progress)
+                for original, red in zip(
+                    (255, 255, 255),
+                    (255, 40, 40),
+                )
+            )
+        else:
+            self.player.color = (255, 255, 255)
+
         if self.remain_time > 0:
             self.remain_time = max(
                 0,
@@ -648,8 +667,9 @@ class Game(arcade.View):
             )
 
         self.game_over()
+        self.game_clear()
 
-        if self.game_over_true:
+        if self.game_over_true or self.game_clear_true:
             return
 
         move_x = 0
@@ -703,7 +723,7 @@ class Game(arcade.View):
         )
 
     def on_mouse_press(self, x, y, button, modifiers):
-        if not self.game_over_true or self.record_saved:
+        if (not self.game_over_true and not self.game_clear_true) or self.record_saved:
             return
 
         if self.name_field.x - self.name_field.width / 2 <= x <= self.name_field.x + self.name_field.width / 2 and self.name_field.y - self.name_field.height / 2 <= y <= self.name_field.y + self.name_field.height / 2:
@@ -718,11 +738,7 @@ class Game(arcade.View):
             self.save_record()
 
     def on_text(self, text):
-        if self.ignore_next_text:
-            self.ignore_next_text = False
-            return
-
-        if not self.game_over_true or self.record_saved:
+        if (not self.game_over_true and not self.game_clear_true) or self.record_saved:
             return
 
         if not text.isprintable():
@@ -740,7 +756,7 @@ class Game(arcade.View):
             arcade.exit()
             return
 
-        if self.game_over_true:
+        if self.game_over_true or self.game_clear_true:
             if self.record_saved:
                 return
 
@@ -770,17 +786,8 @@ class Game(arcade.View):
         elif key == arcade.key.SEMICOLON:
             self.attack()
 
-        elif key == arcade.key.E:
-            self.add_spare_heart()
-
-        elif key == arcade.key.Q:
-            self.remove_spare_heart()
-
         elif key == arcade.key.F:
-            was_game_over = self.game_over_true
             self.damage()
-            if not was_game_over and self.game_over_true:
-                self.ignore_next_text = True
 
     def on_key_release(self, key, modifiers):
         self.moving_keys.discard(key)
