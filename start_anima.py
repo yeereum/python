@@ -252,13 +252,3 @@ class StartAnima(arcade.View):
             self.DdongGo.center_y += 180 * delta_time
 
         self.poop_boss_list.update_animation(delta_time)
-
-if __name__ == "__main__":
-    window = arcade.Window(
-        1280, 720,
-        "poop!",
-        fullscreen=True,
-        resizable=False
-    )
-    window.show_view(StartAnima())
-    arcade.run()

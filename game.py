@@ -1,5 +1,7 @@
 import arcade
 import json
+import random
+import math
 from pathlib import Path
 from pattern import Boss_pattern
 
@@ -28,11 +30,30 @@ class Game(arcade.View):
 
         arcade.load_font("assets/fonts/PressStart2P.ttf")
 
+        self.hurt_sounds = arcade.load_sound("assets/sounds/hurt.wav")
+        self.attack_sounds = arcade.load_sound("assets/sounds/attack.wav")
+        self.rock_break_sounds = arcade.load_sound("assets/sounds/rock_break.wav")
+
         self.boss_pattern = Boss_pattern(self)
+
+        # 이동방향 화살표
+        self.last_move_direction = (0, -1)
+
+        # 공격 이펙트
+        self.attack_effect_timer = 0
+        self.attack_effect_duration = 0.18
+        self.attack_effect_start = (0, 0)
+        self.attack_effect_direction = self.last_move_direction
+
+        # 노데미지 콤보
+        self.no_hurt_combo = 0
+        self.no_hurt_true = False
+
+        # 최종 스코어
+        self.final_score = 0
 
         # 게임오버 설정
         self.game_over_true = False
-        self.final_score = 0
 
         # 게임 클리어 설정
         self.game_clear_true = False
@@ -55,15 +76,59 @@ class Game(arcade.View):
         self.box_center_y = 300
         self.box_border_width = 5
 
+        # 보스 크기
+        self.boss_scale = 0.5
+
         # 보스 체력바
         self.hp_bar_width = 500
         self.hp_bar_height = 20
         self.hp_bar_x = self.window.width / 2
         self.hp_bar_y = 800
 
+        # 보스 체력
+        self.boss_max_hp = 1000
+        self.boss_hp = 1000
+
+        # 공격력
+        self.attack_damage = 100
+
         # 플레이어 체력
         self.max_hp = 5
         self.player_hp = 5
+
+        # 결과창 설정
+        self.overlay_elapsed = 0
+        self.overlay_delay = 1
+        self.overlay_fade_duration = 0.3
+        self.overlay_alpha = 0
+
+        # 피격 이펙트 (색 변화)
+        self.hurt_color_time = 0
+        self.hurt_color_duration = 0.4
+
+        # 공격 이펙트 (색 변화)
+        self.attack_color_time = 0
+        self.attack_color_duration = 0.3
+
+        # 피격 이펙트 (흔들림)
+        self.shake_duration = 0.2
+        self.shake_time = 0
+        self.shake_strength = 7
+        self.shake_x = 0
+        self.shake_y = 0
+        self.camera = arcade.Camera2D()
+
+        # 최대 글자 수
+        self.name_max_length = 10
+        self.player_info_max_length = 10
+
+        self.direction_arrow = arcade.Sprite(
+            "assets/images/game/move_arrow.png",
+            scale=0.3,
+        )
+
+        self.direction_arrow_list = arcade.SpriteList()
+        self.direction_arrow_list.append(self.direction_arrow)
 
         self.heart_sheet = arcade.load_spritesheet(
             "assets/images/game/heart.png"
@@ -110,10 +175,6 @@ class Game(arcade.View):
         self.player_list = arcade.SpriteList()
         self.player_list.append(self.player)
 
-        # 피격 이펙트
-        self.damage_color_time = 0
-        self.damage_color_duration = 0.4
-
         poop_body_sheet = arcade.load_spritesheet(
             "assets/images/poop/body.png"
         )
@@ -122,8 +183,6 @@ class Game(arcade.View):
             columns=2,
             count=8,
         )
-
-        self.boss_scale = 0.5
 
         self.poop_body = Poop_boss(
             self.poop_body_frames,
@@ -154,10 +213,6 @@ class Game(arcade.View):
         self.poop_boss_list.append(self.poop_body)
         self.poop_boss_list.append(self.poop_arm)
 
-        self.boss_max_hp = 1000
-        self.boss_hp = 1000
-        self.attack_damage = 100
-
         self.user_name = ""
         self.player_info = ""
         self.active_input = "user_name"  # 게임오버 창에서 선택되어 있는 입력칸
@@ -168,10 +223,6 @@ class Game(arcade.View):
         self.mouse_y = 0
         self.save_button_hovered = False
 
-        # 최대 글자 수
-        self.name_max_length = 10
-        self.player_info_max_length = 10
-
         self.name_field = arcade.XYWH(
             self.window.width / 2, 455, 500, 48
         )
@@ -180,6 +231,24 @@ class Game(arcade.View):
         )
         self.save_button = arcade.XYWH(
             self.window.width / 2, 235, 300, 60
+        )
+
+    def overlay_fadein(self, color):
+        alpha = self.overlay_alpha
+
+        if len(color) == 4:
+            return (
+                color[0],
+                color[1],
+                color[2],
+                int(color[3] * alpha / 255),
+            )
+
+        return (
+            color[0],
+            color[1],
+            color[2],
+            alpha,
         )
 
     def change_heart(self, index, texture_index):
@@ -205,13 +274,18 @@ class Game(arcade.View):
     def remove_spare_heart(self):
         self.spare_heart_list.clear()
         self.spare_heart = None
+        self.no_hurt_combo = 0
+        self.no_hurt_true = False
+        self.hurt_color_time = self.hurt_color_duration
+        self.player.color = (255, 0, 0)
+        self.shake_screen()
 
     def arm_form(self, index):
         if 0 <= index < len(self.poop_arm_frames):
             self.poop_arm_index = index
             self.poop_arm.texture = self.poop_arm_frames[index]
 
-    def damage(self):
+    def hurt(self):
         if self.game_over_true or self.game_clear_true:
             return
 
@@ -222,15 +296,28 @@ class Game(arcade.View):
         if self.player_hp <= 0:
             self.game_over()
             return
-        
+
+        arcade.play_sound(self.hurt_sounds)
         self.player_hp -= 1
+        self.no_hurt_combo = 0
+        self.no_hurt_true = False
         self.change_heart(self.player_hp, 2)
-        self.damage_color_time = self.damage_color_duration
+        self.hurt_color_time = self.hurt_color_duration
         self.player.color = (255, 0, 0)
+        self.shake_screen()
 
     def attack(self):
         if self.game_over_true or self.game_clear_true:
             return
+
+        self.attack_effect_direction = self.last_move_direction
+        direction_x, direction_y = self.attack_effect_direction
+        effect_offset = max(self.player.width, self.player.height) / 2 + 6
+        self.attack_effect_start = (
+            self.player.center_x + direction_x * effect_offset,
+            self.player.center_y + direction_y * effect_offset,
+        )
+        self.attack_effect_timer = self.attack_effect_duration
 
         if self.boss_hp <= 0:
             self.game_clear()
@@ -242,6 +329,80 @@ class Game(arcade.View):
                 self.boss_hp - self.attack_damage,
             )
 
+        arcade.play_sound(self.attack_sounds)
+        self.attack_color_time = self.attack_color_duration
+        self.poop_body.color = (255, 0, 0)
+
+    def shake_screen(self):
+        self.shake_time = self.shake_duration
+
+    def update_screen_shake(self, delta_time):
+        if self.shake_time <= 0:
+            self.shake_x = 0
+            self.shake_y = 0
+            return
+
+        self.shake_time = max(0, self.shake_time - delta_time)
+
+        progress = self.shake_time / self.shake_duration
+        strength = self.shake_strength * progress
+
+        self.shake_x = random.uniform(-strength, strength)
+        self.shake_y = random.uniform(-strength, strength)
+
+    def draw_direction_arrow(self):
+            direction_x, direction_y = self.last_move_direction
+
+            self.direction_arrow.angle = -math.degrees(
+                math.atan2(direction_y, direction_x)
+            )
+
+            offset = (
+                max(self.player.width, self.player.height) / 2
+                + max(
+                    self.direction_arrow.width,
+                    self.direction_arrow.height,
+                ) / 2
+                + 3
+            )
+
+            self.direction_arrow.center_x = (
+                self.player.center_x + direction_x * offset
+            )
+            self.direction_arrow.center_y = (
+                self.player.center_y + direction_y * offset
+            )
+
+            self.direction_arrow_list.draw()
+
+    def draw_attack_effect(self):
+        if self.attack_effect_timer <= 0:
+            return
+
+        progress = 1 - self.attack_effect_timer / self.attack_effect_duration
+        direction_x, direction_y = self.attack_effect_direction
+        start_x, start_y = self.attack_effect_start
+        effect_distance = 120 * progress
+        effect_x = start_x + direction_x * effect_distance
+        effect_y = start_y + direction_y * effect_distance
+        trail_x = effect_x - direction_x * 12
+        trail_y = effect_y - direction_y * 12
+
+        arcade.draw_line(
+            trail_x,
+            trail_y,
+            effect_x,
+            effect_y,
+            (255, 235, 145),
+            4,
+        )
+        arcade.draw_circle_filled(
+            effect_x,
+            effect_y,
+            4,
+            (255, 255, 220),
+        )
+
     def game_over(self):
         if self.game_over_true:
             return
@@ -249,6 +410,8 @@ class Game(arcade.View):
         if self.remain_time <= 0 or self.player_hp <= 0:
             self.game_clear_true = False
             self.game_over_true = True
+            self.overlay_elapsed = 0
+            self.overlay_alpha = 0
 
         if self.game_over_true:
             self.moving_keys.clear()
@@ -261,11 +424,13 @@ class Game(arcade.View):
         if self.remain_time > 0 and self.player_hp > 0 and self.boss_hp <= 0:
             self.game_over_true = False
             self.game_clear_true = True
+            self.overlay_elapsed = 0
+            self.overlay_alpha = 0
+            self.poop_body.angle = 180
         
         if self.game_clear_true:
             self.moving_keys.clear()
             self.final_score = (self.boss_max_hp - self.boss_hp) * 10 + int(self.remain_time) * 50
-
 
     def draw_game_over_overlay(self):
         # 화면 전체 반투명 배경
@@ -276,7 +441,7 @@ class Game(arcade.View):
                 self.window.width,
                 self.window.height,
             ),
-            (0, 0, 0, 190),
+            self.overlay_fadein((0, 0, 0, 200)),
         )
 
         # 중앙 어두운 패널
@@ -287,7 +452,7 @@ class Game(arcade.View):
                 720,
                 570,
             ),
-            (18, 20, 32, 250),
+            self.overlay_fadein((18, 20, 32, 250)),
         )
 
         # 패널 테두리
@@ -298,7 +463,7 @@ class Game(arcade.View):
                 720,
                 570,
             ),
-            (210, 210, 230),
+            self.overlay_fadein((210, 210, 230)),
             border_width=3,
         )
 
@@ -312,7 +477,7 @@ class Game(arcade.View):
             self.game_over_text,
             self.window.width / 2,
             590,
-            arcade.color.WHITE,
+            self.overlay_fadein((255, 255, 255)),
             font_size=26,
             font_name="Press Start 2P",
             anchor_x="center",
@@ -323,7 +488,7 @@ class Game(arcade.View):
             f"SCORE: {self.final_score}",
             self.window.width / 2,
             535,
-            (255, 220, 120),
+            self.overlay_fadein((255, 220, 120)),
             font_size=18,
             font_name="Press Start 2P",
             anchor_x="center",
@@ -334,7 +499,7 @@ class Game(arcade.View):
             "NAME",
             self.window.width / 2 - 250,
             490,
-            arcade.color.WHITE,
+            self.overlay_fadein((255, 255, 255)),
             font_size=12,
             font_name="Press Start 2P",
             anchor_x="left",
@@ -342,15 +507,15 @@ class Game(arcade.View):
 
         # 이름 텍스트 색상
         name_color = (
-            (100, 150, 210)
+            self.overlay_fadein((100, 150, 210))
             if self.active_input == "user_name"
-            else (70, 75, 95)
+            else self.overlay_fadein((70, 75, 95))
         )
 
         # 이름 칸 배경
         arcade.draw_rect_filled(
             self.name_field,
-            (35, 38, 55),
+            self.overlay_fadein((35, 38, 55)),
         )
         
         # 이름 칸 테두리
@@ -369,7 +534,7 @@ class Game(arcade.View):
             name_display,
             self.window.width / 2 - 235,
             445,
-            (255, 255, 255) if self.user_name else (140, 140, 155),
+            self.overlay_fadein((255, 255, 255)) if self.user_name else self.overlay_fadein((140, 140, 155)),
             font_size=12,
             font_name="Press Start 2P",
             anchor_y="center",
@@ -380,7 +545,7 @@ class Game(arcade.View):
             "STUDENT NUMBER",
             self.window.width / 2 - 250,
             385,
-            arcade.color.WHITE,
+            self.overlay_fadein((255, 255, 255)),
             font_size=12,
             font_name="Press Start 2P",
             anchor_x="left",
@@ -388,15 +553,15 @@ class Game(arcade.View):
 
         # 학번 텍스트 컬러
         info_color = (
-            (100, 150, 210)
+            self.overlay_fadein((100, 150, 210))
             if self.active_input == "player_info"
-            else (70, 75, 95)
+            else self.overlay_fadein((70, 75, 95))
         )
 
         # 학번 칸 배경
         arcade.draw_rect_filled(
             self.player_info_field,
-            (35, 38, 55),
+            self.overlay_fadein((35, 38, 55)),
         )
 
         # 학번 칸 테두리
@@ -415,18 +580,18 @@ class Game(arcade.View):
             info_display,
             self.window.width / 2 - 235,
             340,
-            (255, 255, 255) if self.player_info else (140, 140, 155),
+            self.overlay_fadein((255, 255, 255)) if self.player_info else self.overlay_fadein((140, 140, 155)),
             font_size=12,
             font_name="Press Start 2P",
             anchor_y="center",
         )
 
         if self.record_saved:               # 기록이 저장되었다면
-            button_color = (55, 75, 60)
+            button_color = self.overlay_fadein((55, 75, 60))
         elif self.save_button_hovered:      # 버튼 위에 마우스를 올렸다면
-            button_color = (120, 175, 125)
+            button_color = self.overlay_fadein((120, 175, 125))
         else:
-            button_color = (75, 120, 90)
+            button_color = self.overlay_fadein((75, 120, 90))
 
         # 끝내기 버튼 배경
         arcade.draw_rect_filled(
@@ -437,7 +602,7 @@ class Game(arcade.View):
         # 끝내기 버튼 테두리
         arcade.draw_rect_outline(
             self.save_button,
-            (220, 220, 230),
+            self.overlay_fadein((220, 220, 230)),
             border_width=2,
         )
 
@@ -446,7 +611,7 @@ class Game(arcade.View):
             "FINISH",
             self.window.width / 2,
             235,
-            arcade.color.WHITE,
+            self.overlay_fadein((255, 255, 255)),
             font_size=16,
             font_name="Press Start 2P",
             anchor_x="center",
@@ -459,7 +624,7 @@ class Game(arcade.View):
                 self.save_status,
                 self.window.width / 2,
                 175,
-                (255, 180, 150) if not self.record_saved else (150, 230, 160),
+                self.overlay_fadein((255, 180, 150)) if not self.record_saved else self.overlay_fadein((150, 230, 160)),
                 font_size=10,
                 font_name="Press Start 2P",
                 anchor_x="center",
@@ -487,13 +652,13 @@ class Game(arcade.View):
                 with record_file.open("r", encoding="utf-8") as file:
                     data = json.load(file)
             except (json.JSONDecodeError, OSError):
-                self.save_status = "Could not read records.json"
+                self.save_status = "Could not read record.json"
                 return
         else:
             data = {"players": []}
 
         if not isinstance(data, dict) or not isinstance(data.get("players"), list):
-            self.save_status = "Invalid records.json format"
+            self.save_status = "Invalid record.json format"
             return
 
         players = data["players"]
@@ -543,7 +708,7 @@ class Game(arcade.View):
                     indent=4,
                 )
         except OSError:
-            self.save_status = "Could not save records.json"
+            self.save_status = "Could not save record.json"
             return
 
         self.record_saved = True
@@ -554,6 +719,14 @@ class Game(arcade.View):
 
     def on_draw(self):
         self.clear(color=(10, 11, 18))
+
+        center_x = self.window.width / 2
+        center_y = self.window.height / 2
+        self.camera.position = (center_x + self.shake_x, center_y + self.shake_y)
+        self.camera.use()
+
+        self.draw_direction_arrow()
+        self.draw_attack_effect()
 
         self.boss_pattern.draw()
 
@@ -573,6 +746,27 @@ class Game(arcade.View):
         self.poop_boss_list.draw()
         self.player_list.draw()
 
+        arcade.draw_text(
+            f"{round((self.boss_hp / self.boss_max_hp) * 100, 1)}%",
+            self.hp_bar_x,
+            self.hp_bar_y + 20,
+            color=(244, 213, 141),
+            font_size=15,
+            font_name="Press Start 2P",
+            anchor_x="center"
+        )
+        
+        if self.boss_hp / self.boss_max_hp <= 0.3:
+            arcade.draw_rect_filled(
+                arcade.XYWH(
+                    self.hp_bar_x,
+                    self.hp_bar_y,
+                    self.hp_bar_width * 1.01,
+                    self.hp_bar_height * 1.3,
+                ),
+                (230, 230, 80),
+            )
+
         arcade.draw_rect_filled(
             arcade.XYWH(
                 self.hp_bar_x,
@@ -583,10 +777,8 @@ class Game(arcade.View):
             (70, 30, 30),
         )
 
-        hp_ratio = self.boss_hp / self.boss_max_hp
-
-        if hp_ratio > 0:
-            current_width = self.hp_bar_width * hp_ratio
+        if self.boss_hp / self.boss_max_hp > 0:
+            current_width = self.hp_bar_width * (self.boss_hp / self.boss_max_hp)
 
             arcade.draw_rect_filled(
                 arcade.XYWH(
@@ -629,29 +821,55 @@ class Game(arcade.View):
         if self.game_over_true or self.game_clear_true:
             self.draw_game_over_overlay()
 
+        if self.game_over_true or self.game_clear_true:
+            self.camera.position = (center_x, center_y)
+            self.camera.use()
+            self.draw_game_over_overlay()
+
     def on_update(self, delta_time):
         self.boss_pattern.update(delta_time)
+        self.update_screen_shake(delta_time)
+
+        self.poop_arm.position = self.poop_body.position
+        self.poop_arm.angle = self.poop_body.angle
+        self.poop_arm.color = self.poop_body.color
 
         if self.game_over_true or self.game_clear_true:
+            self.overlay_elapsed += delta_time
+
+            self.overlay_fade_progress = (
+                self.overlay_elapsed - self.overlay_delay
+            ) / self.overlay_fade_duration
+
+            self.overlay_alpha = int(
+                255 * max(0.0, min(1.0, self.overlay_fade_progress))
+            )
+
             self.cursor_time += delta_time
-            if self.cursor_time >= 0.5:          # 커서 깜빡임 시간
+            if self.cursor_time >= 0.5:         # 커서 깜빡임 시간
                 self.cursor_time = 0
                 self.cursor_visible = not self.cursor_visible
+
             return
 
         self.poop_body.update_animation(delta_time)
-        self.poop_arm.position = self.poop_body.position
 
-        if self.damage_color_time > 0:
-            self.damage_color_time = max(
+        if self.attack_effect_timer > 0:
+            self.attack_effect_timer = max(
                 0,
-                self.damage_color_time - delta_time,
+                self.attack_effect_timer - delta_time
             )
 
-            progress = self.damage_color_time / self.damage_color_duration
+        if self.hurt_color_time > 0:
+            self.hurt_color_time = max(
+                0,
+                self.hurt_color_time - delta_time,
+            )
+
+            self.hurt_color_progress = self.hurt_color_time / self.hurt_color_duration
 
             self.player.color = tuple(
-                int(original + (red - original) * progress)
+                int(original + (red - original) * self.hurt_color_progress)
                 for original, red in zip(
                     (255, 255, 255),
                     (255, 40, 40),
@@ -659,6 +877,28 @@ class Game(arcade.View):
             )
         else:
             self.player.color = (255, 255, 255)
+
+        if self.attack_color_time > 0:
+            self.attack_color_time = max(
+                0,
+                self.attack_color_time - delta_time,
+            )
+
+            self.attack_color_progress = self.attack_color_time / self.attack_color_duration
+
+            self.poop_body.color = tuple(
+                int(original + (red - original) * self.attack_color_progress)
+                for original, red in zip(
+                    (255, 255, 255),
+                    (255, 40, 40),
+                )
+            )
+        else:
+            self.poop_body.color = (255, 255, 255)
+
+        if self.no_hurt_combo == 5:
+            self.add_spare_heart()
+            self.no_hurt_combo = 0
 
         if self.remain_time > 0:
             self.remain_time = max(
@@ -687,6 +927,9 @@ class Game(arcade.View):
         if move_x != 0 and move_y != 0:
             move_x *= 0.70710678
             move_y *= 0.70710678
+
+        if move_x != 0 or move_y != 0:
+            self.last_move_direction = (move_x, move_y)
 
         self.player.center_x += move_x * self.move_speed * delta_time
         self.player.center_y += move_y * self.move_speed * delta_time
@@ -726,6 +969,9 @@ class Game(arcade.View):
         if (not self.game_over_true and not self.game_clear_true) or self.record_saved:
             return
 
+        if self.overlay_alpha < 255:
+            return
+
         if self.name_field.x - self.name_field.width / 2 <= x <= self.name_field.x + self.name_field.width / 2 and self.name_field.y - self.name_field.height / 2 <= y <= self.name_field.y + self.name_field.height / 2:
             self.active_input = "user_name"
             return
@@ -740,13 +986,16 @@ class Game(arcade.View):
     def on_text(self, text):
         if (not self.game_over_true and not self.game_clear_true) or self.record_saved:
             return
+        
+        if self.overlay_alpha < 255:
+            return
 
         if not text.isprintable():
             return
 
         if self.active_input == "user_name":
             if len(self.user_name) < self.name_max_length:
-                self.user_name += text
+                    self.user_name += text
         elif self.active_input == "player_info":
             if len(self.player_info) < self.player_info_max_length:
                 self.player_info += text
@@ -765,6 +1014,9 @@ class Game(arcade.View):
                     self.user_name = self.user_name[:-1]
                 elif self.active_input == "player_info":
                     self.player_info = self.player_info[:-1]
+
+            if self.overlay_alpha < 255:
+                return
 
             elif key in (arcade.key.UP, arcade.key.DOWN, arcade.key.TAB):
                 self.active_input = (
@@ -785,9 +1037,6 @@ class Game(arcade.View):
 
         elif key == arcade.key.SEMICOLON:
             self.attack()
-
-        elif key == arcade.key.F:
-            self.damage()
 
     def on_key_release(self, key, modifiers):
         self.moving_keys.discard(key)
