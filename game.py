@@ -41,9 +41,14 @@ class Game(arcade.View):
 
         # 공격 이펙트
         self.attack_effect_timer = 0
-        self.attack_effect_duration = 0.18
+        self.attack_effect_duration = 0.2
         self.attack_effect_start = (0, 0)
         self.attack_effect_direction = self.last_move_direction
+        self.attack_hit = False
+
+        # 공격 쿨타임
+        self.punch_cooltime = 0.1
+        self.punch_timer = 0
 
         # 노데미지 콤보
         self.no_hurt_combo = 0
@@ -89,8 +94,8 @@ class Game(arcade.View):
         self.boss_max_hp = 1000
         self.boss_hp = 1000
 
-        # 공격력
-        self.attack_damage = 100
+        # 플레이어 공격력
+        self.attack_damage = 10
 
         # 플레이어 체력
         self.max_hp = 5
@@ -126,9 +131,22 @@ class Game(arcade.View):
             "assets/images/game/move_arrow.png",
             scale=0.3,
         )
-
         self.direction_arrow_list = arcade.SpriteList()
         self.direction_arrow_list.append(self.direction_arrow)
+
+        self.punch = arcade.Sprite(
+            "assets/images/game/punch.png",
+            scale=0.7,
+        )
+        self.punch_list = arcade.SpriteList()
+        self.punch_list.append(self.punch)
+
+        self.ddong = arcade.Sprite(
+            "assets/images/game/ddong.png",
+            scale=0.7,
+        )
+        self.ddong_list = arcade.SpriteList()
+        self.ddong_list.append(self.ddong)
 
         self.heart_sheet = arcade.load_spritesheet(
             "assets/images/game/heart.png"
@@ -167,13 +185,13 @@ class Game(arcade.View):
             "assets/images/game/DdongGo.png",
             scale=0.1,
         )
+        self.player_list = arcade.SpriteList()
+        self.player_list.append(self.player)
+
         self.player.position = (
             self.box_center_x,
             self.box_center_y,
         )
-
-        self.player_list = arcade.SpriteList()
-        self.player_list.append(self.player)
 
         poop_body_sheet = arcade.load_spritesheet(
             "assets/images/poop/body.png"
@@ -306,32 +324,35 @@ class Game(arcade.View):
         self.player.color = (255, 0, 0)
         self.shake_screen()
 
-    def attack(self):
+    def attack(self, hit=False):
         if self.game_over_true or self.game_clear_true:
             return
 
-        self.attack_effect_direction = self.last_move_direction
-        direction_x, direction_y = self.attack_effect_direction
-        effect_offset = max(self.player.width, self.player.height) / 2 + 6
-        self.attack_effect_start = (
-            self.player.center_x + direction_x * effect_offset,
-            self.player.center_y + direction_y * effect_offset,
-        )
-        self.attack_effect_timer = self.attack_effect_duration
-
-        if self.boss_hp <= 0:
-            self.game_clear()
+        if not self.boss_attack_active:
             return
-        
-        if self.boss_hp > 0:
+
+        if hit:
             self.boss_hp = max(
                 0,
                 self.boss_hp - self.attack_damage,
             )
 
-        arcade.play_sound(self.attack_sounds)
-        self.attack_color_time = self.attack_color_duration
-        self.poop_body.color = (255, 0, 0)
+            arcade.play_sound(self.attack_sounds)
+            self.attack_color_time = self.attack_color_duration
+            self.poop_body.color = (255, 0, 0)
+
+            if self.boss_hp <= 0:
+                self.game_clear()
+
+            return
+
+        self.attack_effect_timer = self.attack_effect_duration
+        self.attack_effect_start = (
+            self.player.center_x,
+            self.player.center_y,
+        )
+        self.attack_effect_direction = self.last_move_direction
+        self.attack_hit = False
 
     def shake_screen(self):
         self.shake_time = self.shake_duration
@@ -353,9 +374,7 @@ class Game(arcade.View):
     def draw_direction_arrow(self):
             direction_x, direction_y = self.last_move_direction
 
-            self.direction_arrow.angle = -math.degrees(
-                math.atan2(direction_y, direction_x)
-            )
+            self.direction_arrow.angle = -math.degrees(math.atan2(direction_y, direction_x))
 
             offset = (
                 max(self.player.width, self.player.height) / 2
@@ -379,29 +398,33 @@ class Game(arcade.View):
         if self.attack_effect_timer <= 0:
             return
 
-        progress = 1 - self.attack_effect_timer / self.attack_effect_duration
+        progress = 1 - (
+            self.attack_effect_timer / self.attack_effect_duration
+        )
+
         direction_x, direction_y = self.attack_effect_direction
         start_x, start_y = self.attack_effect_start
-        effect_distance = 120 * progress
-        effect_x = start_x + direction_x * effect_distance
-        effect_y = start_y + direction_y * effect_distance
-        trail_x = effect_x - direction_x * 12
-        trail_y = effect_y - direction_y * 12
 
-        arcade.draw_line(
-            trail_x,
-            trail_y,
-            effect_x,
-            effect_y,
-            (255, 235, 145),
-            4,
+        punch_distance = 100 * progress
+
+        self.punch.center_x = start_x + direction_x * punch_distance
+        self.punch.center_y = start_y + direction_y * punch_distance
+
+        self.punch.angle = -math.degrees(
+            math.atan2(direction_y, direction_x)
         )
-        arcade.draw_circle_filled(
-            effect_x,
-            effect_y,
-            4,
-            (255, 255, 220),
-        )
+
+        if not self.attack_hit:
+            collided_bosses = arcade.check_for_collision_with_list(
+                self.punch,
+                self.poop_boss_list,
+            )
+
+            if collided_bosses:
+                self.attack_hit = True
+                self.attack(hit=True)
+
+        self.punch_list.draw()
 
     def game_over(self):
         if self.game_over_true:
@@ -859,6 +882,8 @@ class Game(arcade.View):
                 0,
                 self.attack_effect_timer - delta_time
             )
+        
+        self.punch_timer = max(0, self.punch_timer - delta_time)
 
         if self.hurt_color_time > 0:
             self.hurt_color_time = max(
@@ -1035,7 +1060,11 @@ class Game(arcade.View):
         ):
             self.moving_keys.add(key)
 
-        elif key == arcade.key.SEMICOLON:
+        if key == arcade.key.SEMICOLON:
+            if self.punch_timer > 0:
+                return
+
+            self.punch_timer = self.punch_cooltime
             self.attack()
 
     def on_key_release(self, key, modifiers):

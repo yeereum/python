@@ -61,6 +61,158 @@ class Fadeout:
         progress = min(self.elapsed_time / self.duration, 1)
         return int(255 * (1 - progress))
 
+class Boss_attack:
+    def __init__(self, game):
+        self.game = game
+
+        self.state = "normal"
+        self.timer = 0
+        self.duration = 5.0
+        self.move_speed = 500
+        self.scale = 0.65
+
+        self.fadein = Fadein(0.6)
+
+        self.home_x = game.window.width / 2
+        self.home_y = 650
+
+        self.target_x = 0
+        self.target_y = 0
+
+        self.game.boss_attack_active = False
+
+    def set_boss_position(self, x, y):
+        self.game.poop_body.position = (x, y)
+        self.game.poop_arm.position = (x, y)
+
+    def set_boss_alpha(self, alpha):
+        self.game.poop_body.alpha = alpha
+        self.game.poop_arm.alpha = alpha
+
+    def set_boss_scale(self, ratio):
+        body_scale = self.original_body_scale
+        arm_scale = self.original_arm_scale
+
+        if isinstance(body_scale, tuple):
+            self.game.poop_body.scale = tuple(
+                value * ratio for value in body_scale
+            )
+        else:
+            self.game.poop_body.scale = body_scale * ratio
+
+        if isinstance(arm_scale, tuple):
+            self.game.poop_arm.scale = tuple(
+                value * ratio for value in arm_scale
+            )
+        else:
+            self.game.poop_arm.scale = arm_scale * ratio
+
+    def choose_target(self):
+        body = self.game.poop_body
+
+        left = (
+            self.game.box_center_x
+            - self.game.box_width / 2
+            + body.width / 2
+        )
+        right = (
+            self.game.box_center_x
+            + self.game.box_width / 2
+            - body.width / 2
+        )
+        bottom = (
+            self.game.box_center_y
+            - self.game.box_height / 2
+            + body.height / 2
+        )
+        top = (
+            self.game.box_center_y
+            + self.game.box_height / 2
+            - body.height / 2
+        )
+
+        self.target_x = random.uniform(left, right)
+        self.target_y = random.uniform(bottom, top)
+
+    def start(self):
+        self.original_body_scale = self.game.poop_body.scale
+        self.original_arm_scale = self.game.poop_arm.scale
+        self.state = "enter"
+        self.timer = 0
+        self.game.boss_attack_active = False
+
+        self.set_boss_scale(self.scale)
+        self.set_boss_position(
+            self.game.box_center_x,
+            self.game.box_center_y,
+        )
+        self.set_boss_alpha(0)
+
+        self.fadein.start()
+
+    def update(self, delta_time):
+        body = self.game.poop_body
+
+        if self.state == "enter":
+            self.fadein.update(delta_time)
+            self.set_boss_alpha(self.fadein.alpha)
+
+            if not self.fadein.active:
+                self.set_boss_alpha(255)
+                self.game.boss_attack_active = True
+                self.state = "run"
+                self.timer = 0
+                self.choose_target()
+
+        elif self.state == "run":
+            self.timer += delta_time
+
+            dx = self.target_x - body.center_x
+            dy = self.target_y - body.center_y
+            distance = (dx ** 2 + dy ** 2) ** 0.5
+
+            if distance <= self.move_speed * delta_time or distance == 0:
+                self.set_boss_position(
+                    self.target_x,
+                    self.target_y,
+                )
+                self.choose_target()
+            else:
+                move_x = dx / distance * self.move_speed * delta_time
+                move_y = dy / distance * self.move_speed * delta_time
+
+                self.set_boss_position(
+                    body.center_x + move_x,
+                    body.center_y + move_y,
+                )
+
+            if self.timer >= self.duration:
+                self.game.boss_attack_active = False
+
+                self.set_boss_position(
+                    self.home_x,
+                    self.home_y,
+                )
+                self.set_boss_scale(1.0)
+                self.set_boss_alpha(0)
+
+                self.fadein.start()
+                self.state = "return"
+
+        elif self.state == "return":
+            self.fadein.update(delta_time)
+            self.set_boss_alpha(self.fadein.alpha)
+
+            if not self.fadein.active:
+                self.set_boss_alpha(255)
+                self.state = "normal"
+                return True
+
+        return False
+
+    def draw(self):
+        pass
+
 class Normal_pattern:
     class Kwangkwang:
         def __init__(self, game):
@@ -348,12 +500,26 @@ class Normal_pattern:
                 ),
             ]
 
-            self.final_zone = arcade.XYWH(
-                middle_x,
-                middle_y,
-                top - bottom + 50,
-                top - bottom,
-            )
+            self.final_zone = [
+                arcade.XYWH(
+                    middle_x,
+                    middle_y,
+                    top - bottom + 70,
+                    top - bottom,
+                ),
+                arcade.XYWH(
+                    right - (self.box_width - (top - bottom + 70)) / 4 + self.box_border_width,
+                    middle_y,
+                    (self.box_width - (top - bottom + 70)) / 2,
+                    top - bottom - 200
+                ),
+                arcade.XYWH(
+                    left + (self.box_width - (top - bottom + 70)) / 4 - self.box_border_width,
+                    middle_y,
+                    (self.box_width - (top - bottom + 70)) / 2,
+                    top - bottom - 200
+                )
+            ]
 
         def start(self):
             self.box_center_x = self.game.box_center_x
@@ -482,17 +648,18 @@ class Normal_pattern:
 
         def check_final_hit(self):
             player = self.game.player
-            zone = self.final_zone
 
-            overlaps = (
-                player.right > zone.left
-                and player.left < zone.right
-                and player.top > zone.bottom
-                and player.bottom < zone.top
-            )
+            for zone in self.final_zone:
+                overlaps = (
+                    player.right > zone.left
+                    and player.left < zone.right
+                    and player.top > zone.bottom
+                    and player.bottom < zone.top
+                )
 
-            if overlaps:
-                self.game.hurt()
+                if overlaps:
+                    self.game.hurt()
+                    return
 
         def draw(self):
             if self.state == "normal":
@@ -562,10 +729,11 @@ class Normal_pattern:
                 )
 
             elif self.state == "final_attack_wait":
-                arcade.draw_rect_filled(
-                    self.final_zone,
-                    (255, 230, 100, 100),
-                )
+                for zone in self.final_zone:
+                    arcade.draw_rect_filled(
+                        zone,
+                        (255, 230, 100, 100),
+                    )
 
             elif self.state == "attack" and self.active_zone is not None:
                 if self.timer < self.attack_fadeout_duration:
@@ -612,10 +780,11 @@ class Normal_pattern:
                 else:
                     attack_alpha = 160
 
-                arcade.draw_rect_filled(
-                    self.final_zone,
-                    (255, 50, 50, attack_alpha),
-                )
+                for zone in self.final_zone:
+                    arcade.draw_rect_filled(
+                        zone,
+                        (255, 50, 50, attack_alpha),
+                    )
 
 class Enhance_pattern:
     class Enhance_drop:
@@ -625,48 +794,78 @@ class Boss_pattern:
     def __init__(self, game):
         self.game = game
 
+        self.boss_attack = Boss_attack(game)
+        self.boss_attack_delay = 1
+        self.boss_attack_timer = 0
+        self.boss_attack_due = False
+
         self.normal_pattern = [
             Normal_pattern.Kwangkwang(game),
             Normal_pattern.Memory_battle(game)
         ]
-        self.enhance_pattern = [
-        ]
+
+        self.enhance_pattern = []
 
         self.current_pattern = None
         self.pattern_stack = 0
-        self.cooldown = 1
+        self.cooltime = 1
 
     def update(self, delta_time):
         if self.current_pattern is None:
-            self.cooldown -= delta_time
+            if self.boss_attack_due:
+                self.boss_attack_timer += delta_time
 
-            if self.game.boss_hp / self.game.boss_max_hp > 0.3:
-                if self.cooldown <= 0 and self.normal_pattern:
-                    self.current_pattern = random.choice(
-                        self.normal_pattern
-                    )
+                if self.boss_attack_timer >= self.boss_attack_delay:
+                    self.current_pattern = self.boss_attack
                     self.current_pattern.start()
-                    self.game.no_hurt_true = True
 
+            else:
+                self.cooltime -= delta_time
 
-            elif self.game.boss_hp / self.game.boss_max_hp <= 0.3:
-                if self.cooldown <= 0 and self.enhance_pattern:
-                    self.current_pattern = random.choice(
-                        self.enhance_pattern
+                if self.cooltime <= 0:
+                    boss_hp_ratio = (
+                        self.game.boss_hp / self.game.boss_max_hp
                     )
-                    self.current_pattern.start()
-                    self.game.no_hurt_true = True
+
+                    if boss_hp_ratio > 0.3:
+                        available_patterns = self.normal_pattern
+                    else:
+                        available_patterns = self.enhance_pattern
+
+                    if available_patterns:
+                        self.current_pattern = random.choice(
+                            available_patterns
+                        )
+                        self.current_pattern.start()
+                        self.game.no_hurt_true = True
 
         if self.current_pattern is not None:
             finished = self.current_pattern.update(delta_time)
 
             if finished:
+                is_boss_attack = (
+                    self.current_pattern is self.boss_attack
+                )
+
                 self.current_pattern = None
-                self.cooldown = 1
                 self.game.arm_form(0)
-                self.pattern_stack += 1
-                if self.game.spare_heart is None and self.game.no_hurt_true:
-                    self.game.no_hurt_combo += 1
+
+                if is_boss_attack:
+                    self.boss_attack_due = False
+                    self.boss_attack_timer = 0.0
+                    self.cooltime = 1
+
+                else:
+                    self.pattern_stack += 1
+                    self.cooltime = 1
+
+                    if self.pattern_stack % 2 == 0:
+                        self.boss_attack_due = True
+                        self.boss_attack_timer = 0.0
+
+                    if self.game.spare_heart is None and self.game.no_hurt_true:
+                        self.game.no_hurt_combo += 1
+                        self.cooltime = 1.5
 
     def draw(self):
         if self.current_pattern is not None:
