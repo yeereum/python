@@ -1,5 +1,6 @@
 import arcade
 from PIL import Image
+from information import Information
 
 class Button:
     button_scale = 1
@@ -103,7 +104,7 @@ class Lobby(arcade.View):
         self.window.show_view(StartAnima())
 
     def click_record(self):
-        print("해당 기능(기록)은 준비중 :)")
+        self.window.show_view(Information(self))
 
     def click_exit(self):
         arcade.exit()

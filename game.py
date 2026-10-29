@@ -4,6 +4,8 @@ import random
 import math
 from pathlib import Path
 from pattern import Boss_pattern
+from pattern import Normal_pattern
+from pattern import Enhance_pattern
 
 record_file = Path(__file__).resolve().parent / "record.json"
 
@@ -72,7 +74,7 @@ class Game(arcade.View):
         self.moving_keys = set()
 
         # 타이머
-        self.remain_time = 180
+        self.remain_time = 120
 
         # 흰 박스 속성
         self.box_width = 700
@@ -147,6 +149,13 @@ class Game(arcade.View):
         )
         self.ddong_list = arcade.SpriteList()
         self.ddong_list.append(self.ddong)
+
+        self.minipoop = arcade.Sprite(
+            "assets/images/game/mini_poop.png",
+            scale=0.7,
+        )
+        self.minipoop_list = arcade.SpriteList()
+        self.minipoop_list.append(self.minipoop)
 
         self.heart_sheet = arcade.load_spritesheet(
             "assets/images/game/heart.png"
@@ -328,10 +337,10 @@ class Game(arcade.View):
         if self.game_over_true or self.game_clear_true:
             return
 
-        if not self.boss_attack_active:
-            return
-
         if hit:
+            if not self.boss_attack_active:
+                return
+
             self.boss_hp = max(
                 0,
                 self.boss_hp - self.attack_damage,
@@ -423,6 +432,19 @@ class Game(arcade.View):
             if collided_bosses:
                 self.attack_hit = True
                 self.attack(hit=True)
+
+            elif (
+                self.boss_pattern.current_pattern is not None
+                and isinstance(
+                    self.boss_pattern.current_pattern,
+                    (
+                        Normal_pattern.Field_attack,
+                        Enhance_pattern.Enhance_field_attack
+                    )
+                )
+            ):
+                if self.boss_pattern.current_pattern.hit_object():
+                    self.attack_hit = True
 
         self.punch_list.draw()
 
@@ -779,7 +801,7 @@ class Game(arcade.View):
             anchor_x="center"
         )
         
-        if self.boss_hp / self.boss_max_hp <= 0.3:
+        if self.boss_hp / self.boss_max_hp <= 0.4:
             arcade.draw_rect_filled(
                 arcade.XYWH(
                     self.hp_bar_x,
@@ -1026,9 +1048,9 @@ class Game(arcade.View):
                 self.player_info += text
 
     def on_key_press(self, key, modifiers):
-        if key == arcade.key.ESCAPE:
-            arcade.exit()
-            return
+        # if key == arcade.key.ESCAPE:
+        #     arcade.exit()
+        #     return
 
         if self.game_over_true or self.game_clear_true:
             if self.record_saved:
@@ -1070,15 +1092,15 @@ class Game(arcade.View):
     def on_key_release(self, key, modifiers):
         self.moving_keys.discard(key)
 
-if __name__ == "__main__":
-    window = arcade.Window(
-        1280,
-        720,
-        "poop!",
-        fullscreen=True,
-        resizable=False,
-    )
+# if __name__ == "__main__":
+#     window = arcade.Window(
+#         1280,
+#         720,
+#         "poop!",
+#         fullscreen=True,
+#         resizable=False,
+#     )
 
-    window.center_window()
-    window.show_view(Game())
-    arcade.run()
+#     window.center_window()
+#     window.show_view(Game())
+#     arcade.run()
